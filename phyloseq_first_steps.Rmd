@@ -1,0 +1,321 @@
+
+#С микробиомом удобнее работать в ноутбуке можно организовать код по блокам и сразу увидеть график на выходе
+
+# обычно сначала вверху делаем чанк с импортов всех бтльтотек которые понадобятся для кода лучше собирать их все здесь
+```{r}
+library("phyloseq")
+library("ggplot2")      
+library("readxl")      
+library("dplyr")        
+library("tibble") 
+library("vegan")
+library("scales")
+library("microbiome")
+library(dplyr)
+library(hrbrthemes)
+library(gcookbook)
+library(tidyverse)
+```
+
+#ипорт таблиц для филосека
+```{r}
+otu_count_df<- read.csv("./metaphlan_count_df.csv", sep='\t')
+#otu_count_df <- slice(otu_count_df, -1)
+taxa_df<- read.csv("./metaphlan_taxa_df.csv", sep='\t')
+samples_df <- read.csv("./metaphlan_full_metadata_orig.csv")
+```
+
+#сборка 
+```{r}
+samples_df$Стадия.тяжести.пародонтита <- as.factor(samples_df$Стадия.тяжести.пародонтита)
+#taxa_df <- slice(taxa_df, -1)
+# remove underscore to reach consistency in sample IDs
+colnames(otu_count_df)<-gsub("_","",colnames(otu_count_df))
+
+# NA filling for empty values in samples metadata df
+samples_df <- samples_df %>% mutate(across(everything(), ~ifelse(.=="", NA, as.character(.))))
+
+# defining row names
+otu_count_df <- otu_count_df %>%
+  tibble::column_to_rownames("OTU") 
+samples_df <- samples_df %>% 
+  tibble::column_to_rownames("ID") 
+taxa_df <- taxa_df %>% 
+  tibble::column_to_rownames("OTU")
+otu_count_df <- as.matrix(otu_count_df)
+taxa_df <- as.matrix(taxa_df)
+
+# creating phyloseq
+OTU = otu_table(otu_count_df, taxa_are_rows = TRUE)
+TAX = tax_table(taxa_df)
+SAMPLES = sample_data(samples_df)
+ps_phyloseq <- phyloseq(OTU, TAX, SAMPLES)
+ps_phyloseq
+```
+# первое что бросилось в глаза это то что в таксономической таблице есть none тк для вгс мы в основном работаем на видах надо отфильтровать None на видах (обязательно делать перед анализом) + для единого формата я удалю t__ из Strain (если мы захотим сделать новые имена для такосонов в таблице лучше чтобы все было единообразно)
+```{r}
+tax <- as.data.frame(as.matrix(ps_phyloseq@tax_table)) 
+tax$Strain <- gsub('t__','',tax$Strain)
+ps_phyloseq@tax_table <-  tax_table((as.matrix(tax))) # возращаем на место
+
+```
+
+#убираем виды тк это не временное изменение записываю в оригальное название филосека а еще лучше oтфильтровать эукариоты и археи
+
+```{r}
+ps_phyloseq #смотрим что бьло до 
+ps_phyloseq <- subset_taxa(ps_phyloseq, !Species %in% c("None") & !Phylum %in% c('Eukaryota','Archaea'))
+ps_phyloseq # смотрим что все отфильтровалось
+```
+# playing with phyloseq
+```{r}
+sample_names(ps_phyloseq)
+rank_names(ps_phyloseq)
+sample_variables(ps_phyloseq)
+
+```
+#на метаданные лучше посмотреть до чтобы посомотреть перед анализом очень часто надо интересующие переменные причесать либо сделать новые переменные
+
+#смотрим на метаданные 
+```{r, fig.width=15, fig.height=10}
+ps_obj <- ps_phyloseq #каждый раз когда мы работаем с филосеком в ячейке мы создаем ps_obj = наш исходный филосек и работаем с ним
+
+#ps_obj <- subset_samples(ps_obj,ps_obj@sam_data$Стадия_тяжести_пародонтита !='нет_данных')
+df <- as.data.frame(as.matrix(ps_obj@sam_data))
+
+cols_to_keep <- c("Возраст","Пол", "Вес",'АБ.за.полгода',"Стадия.тяжести.пародонтита") #например возьмем эти
+
+df_f <- select(df, all_of(cols_to_keep))
+
+df_long <- df_f %>%
+  pivot_longer(cols = everything(), names_to = "Column_Name", values_to = "Value")
+size=15
+# Create a count plot
+ggplot(df_long, aes(x = Value,fill=Value)) +
+  geom_bar() +
+  facet_wrap(~ Column_Name, scales = "free")  +
+  labs(title = "Count Plot", x = "Value", y = "Count") + theme(
+    axis.text.y = element_text(color = "black", size = size),
+    axis.text.x = element_text(angle=90, hjust=1,size=size,color = 'black'),
+    legend.position = "right",
+    axis.title.y  = element_text(color = "black", size = size,angle=90),
+    axis.title.x  = element_text(color = "black", size = size),
+    #legend.key.size = unit(0.5, 'cm'),
+    #plot.title = element_text(hjust = 0.5,size =size),
+    text = element_text(size = size,colour ='black' ),
+    # Set panel background to white
+    panel.border = element_rect(fill = NA, color = "black"),
+     panel.background = element_rect(fill = "white", colour = "black"),
+    panel.grid.major = element_line(size = 0.1, linetype = 'solid',
+                                colour = "gray"), 
+  panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                colour = "gray")) 
+df$df_sample <- row.names(df)
+```
+#задание на метаданные
+# уже на этих переменных видно что можно сделать:
+1) колонки лучше сделать чтобы вместо . был _ (просто удобнее читать и видеть на графиках)
+2) в колонке АБ.за.полгода какая то дичь надо исправить подумай какие переменные нам было бы удобно использовать в дальнейшем
+3) сделай новую колонку для возраста (разбей возраст на промежутки)
+4) у нас есть вес можно рассчитать BMI сделай колонку BMI
+5) посмотри все колонки из филосека если где то переменные недобно названы или с опечатками исправь это (необязателньо все но 2-3 колонки)
+6) можешь как то повизиуализировать например посмотреть как некоторые переменные распределены внутри групп по стадии тяжести пародонтита 
+7) создай колонку sample_id
+
+# фильтрация
+```{r, fig.width=10, fig.height=5}
+# filtering options, for example
+ps_phyloseq_sample_subset <- subset_samples(ps_phyloseq, Стадия.тяжести.пародонтита  =="средняя")
+ps_phyloseq_taxa_subset <- subset_taxa(ps_phyloseq, Phylum %in% c("Proteobacteria", "Firmicutes"))
+# reads normalization
+total = median(sample_sums(ps_phyloseq))
+standf = function(x, t=total) round(t * (x / sum(x)))
+ps_phyloseq_norm = transform_sample_counts(ps_phyloseq, standf)
+# barplots just 4 fun
+plot1 <- plot_bar(ps_phyloseq, fill = "Class")
+plot1
+plot_norm <- plot_bar(ps_phyloseq_norm, fill = "Class")
+plot_norm
+#можно делать как ты заносить отфитрованное что то в отдельную переменную и работать с ней 
+```
+ а можно сделать вот так допустим в этом чанке я хочу отфильтровать только средних по тяжести и оставить только мужчин
+```{r, fig.width=10, fig.height=5}
+ps_obj <- ps_phyloseq #присваеваем оригинальный филосек 
+ps_obj
+ps_obj <- subset_samples(ps_phyloseq, Стадия.тяжести.пародонтита  =="средняя" & Пол == 'м')
+#а теперь я хочу чтобы остались только виды у которые есть Strain
+ps_obj <- subset_taxa(ps_obj, Strain != 'None')
+ps_obj
+#а теперь для этих видов я хочу все схлопнуть до родов 
+ps_obj <- speedyseq::tax_glom(ps_obj,taxrank = 'Genus', NArm=T ) # speedyseq пакет для филосека с быстрыми функциями
+ps_obj
+#а еще я хочу это отфильтровать по распростарненности и  нормализовать это в относительную представленность https://microbiome.github.io/tutorials/
+det <- 1
+prev<-50/100
+taxas <- core_members(ps_obj, detection = det, prevalence = prev)
+ps_obj <- prune_taxa(taxas, ps_obj)
+ps_obj
+transformation <- 'compositional'
+ps_obj <- microbiome::transform(ps_obj, transformation)
+#ну и сделать простой график 
+plot_bar(ps_obj, fill = "Genus")
+#или взять из пакета микробиом
+#create sample id
+ps_obj@sam_data$sample_id <- row.names(ps_obj@sam_data)
+p <- plot_composition(ps_obj,
+                      taxonomic.level = "Genus",
+                      #sample.sort = "nationality",
+                      x.label = "sample_id") +
+  scale_fill_brewer("Genera", palette = "Paired") +
+  guides(fill = guide_legend(ncol = 1)) +
+  scale_y_percent() +
+  labs(x = "Samples", y = "Relative abundance (%)",
+       title = "Relative abundance data") + 
+  theme_ipsum(grid="Y") +
+  theme(axis.text.x = element_text(angle=90, hjust=1),
+        legend.text = element_text(face = "italic"))
+print(p)  
+```
+
+задание:
+1) посмотеть на сабсет на пациентах которым больше 50 лет и вес меньше 70 кг
+2) агломерировать до семейств
+3) отфильтровать низкопредставленные 
+4) нормализовать
+5)сделать бар плот по оси х примал ли пациент анитибиотики за последние пол года (да/нет)
+6) повтори графики осюда https://microbiome.github.io/tutorials/
+7) сделать на топ 15 видах (другая агломерация)
+8) как сделать на графиках p <- plot_composition нормальные названия таксонов а как из изменить в самом ps_obj?
+
+##############################################################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# heatmaps with filtering by abundance
+ps_phyloseq_abund <- filter_taxa(ps_phyloseq_norm, function(x) sum(x > total*0.05) > 0, TRUE)
+ps_phyloseq_abund
+heatmap_1 <- plot_heatmap(ps_phyloseq, method = "NMDS", distance = "bray", taxa.label = "Class", taxa.order = "Class")
+heatmap_1
+heatmap_2 <- plot_heatmap(ps_phyloseq_abund, method = "NMDS", distance = "bray",)
+heatmap_2
+heatmap_3 <- plot_heatmap(ps_phyloseq_abund, method = "MDS", distance = "(A+B-2*J)/(A+B-J)", 
+             taxa.label = "Phylum", taxa.order = "Phylum", 
+             trans=NULL, low="beige", high="red", na.value="beige")
+heatmap_3
+
+# alpha-diversity 
+alpha1 <- plot_richness(ps_phyloseq_abund, measures=c("Chao1", "Shannon"))
+alpha1
+
+#ordination
+ps_phyloseq.ord <- ordinate(ps_phyloseq_abund, "NMDS", "bray")
+ord1 <- plot_ordination(ps_phyloseq_abund, ps_phyloseq.ord, type="taxa", color="Family", shape= "Genus", 
+                title="OTUs")
+ord1
+ord2 <-   plot_ordination(ps_phyloseq_abund, ps_phyloseq.ord, type="taxa", color="Genus", 
+                          title="OTUs", label="Genus") + 
+  facet_wrap(~Family, 3)
+ord2
+
+# network
+net1 <- plot_net(ps_phyloseq_abund, distance = "(A+B-2*J)/(A+B)", type = "taxa", 
+                 maxdist = 0.8, color="Family", point_label="Genus") 
+net1
+
+# trying to create with taxa_are_rows=F
+OTU2 = otu_table(otu_count_df, taxa_are_rows = FALSE)
+TAX = tax_table(taxa_df)
+samples = sample_data(samples_df)
+ps_phyloseq2 <- phyloseq(OTU2, TAX, SAMPLES)
+# fails as intended, I suppose
+# Error in validObject(.Object) : invalid class “phyloseq” object: 
+# Component taxa/OTU names do not match.
+# Taxa indices are critical to analysis.
+
+#taxa agglomeration
+ps_genus <- tax_glom(ps_phyloseq, taxrank="Genus")
+ps_species <- tax_glom(ps_phyloseq, taxrank="Species")
+
+
+# to replace OTU table: assign-otu_table
+# to replace tax table: assign-tax_table
+# to replace sample table: assign-sample_data
+
+# 7-11 Nov 2024: adonis, compositional analysis & clr-transformation
+# compositional analysis => Bray-Curtis distance
+# clr-transformation => Euclidean
+# do we need to agglomerate?? try anyway
+
+# trying from this tutorial: https://deneflab.github.io/MicrobeMiseq/demos/mothur_2_phyloseq.html
+# and this: https://microbiome.github.io/tutorials/PERMANOVA.html
+# may be useful: https://chrischizinski.github.io/rstats/adonis/
+# also in different corners of Internet there are transposing of matrix, dunno why
+# genus
+ps_genus <- tax_glom(ps_phyloseq, taxrank="Genus")
+ps_phyloseq_g_bray.ord <- ordinate(ps_genus, method = "bray")
+ps_phyloseq_g_bray.matrix <- phyloseq::distance(ps_genus, method = "bray")
+# omitting NAs for now, add more sample data later(same approach for species data and all data)
+adonis_genus <- adonis2(ps_phyloseq_g_bray.matrix ~ Стадия.тяжести.пародонтита, data = samples_df, na.action = 'na.omit')
+
+# species
+ps_species <- tax_glom(ps_phyloseq, taxrank="Species")
+ps_phyloseq_s_bray.ord <- ordinate(ps_species, method = "bray")
+ps_phyloseq_s_bray.matrix <- phyloseq::distance(ps_species, method = "bray")
+adonis_species <- adonis2(ps_phyloseq_s_bray.matrix ~ Стадия.тяжести.пародонтита, data = samples_df, na.action = 'na.omit')
+
+# all data, no agglomeration
+ps_phyloseq_bray.ord <- ordinate(ps_phyloseq, method = "bray")
+ps_phyloseq_bray.matrix <- phyloseq::distance(ps_phyloseq, method = "bray")
+adonis_all <- adonis2(ps_phyloseq_bray.matrix ~ Стадия.тяжести.пародонтита, data = samples_df, na.action = 'na.omit')
+# it works, I suppose, but not significant
+
+# barplots for all data
+coef <- coef(adonis_all)["Total",]
+# coeff NULL, wtf
+# not significant?
+# code below should work, but due to NULL, stop here.
+top.coef <- coef[rev(order(abs(coef)))[1:20]]
+par(mar = c(3, 14, 2, 1))
+barplot(sort(top.coef), horiz = T, las = 1, main = "Top taxa")
+
+# CLR to see if it even works
+# tutorial here: https://www.nicholas-ollberding.com/post/introduction-to-the-statistical-analysis-of-microbiome-data-in-r/
+# also may be useful: https://microbiome.github.io/OMA/docs/devel/pages/21_microbiome_community.html
+# probably we need microbiome package, install if necessary
+ps_porph_clr <- microbiome::transform(ps_phyloseq, "clr", method = "euclidean")
+ps_clr <- adonis2(ps_porph_clr ~ phyloseq::sample_data(ps_phyloseq)$Стадия.тяжести.пародонтита, na.action='na.omit')
+# here na.omit doesn't work, strange
+ps_porph_g_clr <- microbiome::transform(ps_genus, "clr", method = "euclidean")
+ps_porph_s_clr <- microbiome::transform(ps_species, "clr", method = "euclidean")
+
+# todo: get advices, get codereview
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+

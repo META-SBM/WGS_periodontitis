@@ -1,0 +1,153 @@
+---
+title: "porphyromonas_task"
+author: "ISonetz"
+date: "2024-11-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(dev = "png",
+                      dpi = 300,
+                      echo = FALSE,
+                      cache = TRUE)
+library("phyloseq")
+library("ggplot2")      
+library("readxl")      
+library("dplyr")        
+library("tibble") 
+library("vegan")
+library("scales")
+library("microbiome")
+library("hrbrthemes")
+library("gcookbook")
+library("tidyverse")
+library('speedyseq')
+```
+
+## Analysis of WGS Porphyromonas data made with Phyloseq
+
+```{r reading data and creating phyloseq object}
+otu_count_df<- read.csv("../metaphlan_count_df.csv", sep='\t')
+taxa_df<- read.csv("../metaphlan_taxa_df.csv", sep='\t')
+samples_df <- read.csv("../metaphlan_full_metadata_mod2.csv", sep=',')
+# NA filling for empty values in samples metadata df
+samples_df <- samples_df %>% mutate(across(everything(), ~ifelse(.=="", NA, as.character(.))))
+# remaking date column
+samples_df[['Дата.забора.образца']] <- strptime(samples_df[['Дата.забора.образца']], 
+                                                format = "%d/%m/%y")
+
+# making age column as factor
+samples_df$Возраст = cut(as.numeric(samples_df$Возраст), breaks = 4, 
+                         labels = c ('(36-45.2]', '(45.2-54.5]', '(54.5-63.8]', '(63.8-73]'))
+# non_numeric_cols <- sapply(samples_df, is.character)
+# samples_df[non_numeric_cols] <- lapply(samples_df[non_numeric_cols==TRUE], as.factor)
+# remove underscore to reach consistency in sample IDs
+
+
+colnames(otu_count_df)<-gsub("_","",colnames(otu_count_df))
+```
+
+```{r creating phyloseq}
+# defining row names
+otu_count_df <- otu_count_df %>%
+  tibble::column_to_rownames("OTU") 
+samples_df <- samples_df %>% 
+  tibble::column_to_rownames("ID") 
+taxa_df <- taxa_df %>% 
+  tibble::column_to_rownames("OTU")
+otu_count_df <- as.matrix(otu_count_df)
+taxa_df <- as.matrix(taxa_df)
+# creating phyloseq
+OTU = otu_table(otu_count_df, taxa_are_rows = TRUE)
+TAX = tax_table(taxa_df)
+SAMPLES = sample_data(samples_df)
+ps_phyloseq <- phyloseq(OTU, TAX, SAMPLES)
+#create sample id
+ps_phyloseq@sam_data$sample_id <- row.names(ps_phyloseq@sam_data)
+
+```
+
+```{r cleaning phyloseq obj}
+# removing 't__' from Strain
+tax <- as.data.frame(as.matrix(ps_phyloseq@tax_table)) 
+tax$Strain <- gsub('t__','',tax$Strain)
+ps_phyloseq@tax_table <-  tax_table((as.matrix(tax)))
+# filtering euk/archaea
+ps_phyloseq <- subset_taxa(ps_phyloseq, !Species %in% c("None") & !Phylum %in% c('Eukaryota','Archaea'))
+```
+
+```{r sample data plot, dev = 'png', fig.width=15, fig.height=10}
+ps_obj <- ps_phyloseq # copy of original phyloseq obj
+
+df <- as.data.frame(as.matrix(ps_obj@sam_data))
+
+cols_to_keep <- c("Возраст","Пол", "Вес",'Артериальная.гипертензия','СД', "Стадия.тяжести.пародонтита", 'Курение.в.настоящее.время') # for example
+
+df_f <- select(df, all_of(cols_to_keep))
+
+df_long <- df_f %>%
+  pivot_longer(cols = everything(), names_to = "Column_Name", values_to = "Value")
+size=10
+# Create a count plot
+ggplot(df_long, aes(x = Value,fill=Value)) +
+  geom_bar() +
+  facet_wrap(~ Column_Name, scales = "free")  +
+  labs(title = "Count Plot", x = "Value", y = "Count") + theme(
+    axis.text.y = element_text(color = "black", size = size),
+    axis.text.x = element_text(angle=90, hjust=1,size=size,color = 'black'),
+    legend.position = "right",
+    axis.title.y  = element_text(color = "black", size = size,angle=90),
+    axis.title.x  = element_text(color = "black", size = size),
+    #legend.key.size = unit(0.5, 'cm'),
+    #plot.title = element_text(hjust = 0.5,size =size),
+    text = element_text(size = size,colour ='black' ),
+    # Set panel background to white
+    panel.border = element_rect(fill = NA, color = "black"),
+     panel.background = element_rect(fill = "white", colour = "black"),
+    panel.grid.major = element_line(size = 0.1, linetype = 'solid',
+                                colour = "gray"), 
+  panel.grid.minor = element_line(size = 0.1, linetype = 'solid',
+                                colour = "gray")) 
+df$df_sample <- row.names(df)
+```
+
+```{r some testing plots and transformation, dev='png', fig.width=15, fig.height=10}
+ps_obj <- ps_phyloseq # copy of phyloseq 
+ps_obj
+ps_obj <- subset_samples(ps_phyloseq, Стадия.тяжести.пародонтита  =="средняя" & Пол == 'м')
+# only for strains
+ps_obj <- subset_taxa(ps_obj, Strain != 'None')
+ps_obj
+# Genus-level only
+ps_obj <- speedyseq::tax_glom(ps_obj,taxrank = 'Genus', NArm=T ) # speedyseq пакет для филосека с быстрыми функциями
+ps_obj
+# normalizing https://microbiome.github.io/tutorials/
+det <- 1
+prev<-50/100
+taxas <- core_members(ps_obj, detection = det, prevalence = prev)
+ps_obj <- prune_taxa(taxas, ps_obj)
+ps_obj
+transformation <- 'compositional'
+ps_obj <- microbiome::transform(ps_obj, transformation)
+# 1st plot
+plot_bar(ps_obj, fill = "Genus")
+#smth wrong here, no idea now
+```
+
+```{r empty chunk, dev='png', fig.width=15, fig.height=10}
+# using microbiome pkg
+#scale_color_brewer has too small colors, instead use standard gradient palette
+p <- plot_composition(ps_obj,
+                      taxonomic.level = "Genus",
+                      #sample.sort = "nationality",
+                      x.label = "sample_id") +
+  guides(fill = guide_legend(ncol = 1)) +
+  scale_y_percent() +
+  labs(x = "Samples", y = "Relative abundance (%)",
+       title = "Relative abundance data") + 
+  theme_ipsum(grid="Y") +
+  theme(axis.text.x = element_text(angle=90, hjust=1),
+        legend.text = element_text(face = "italic"))
+print(p)
+# this plot works
+```

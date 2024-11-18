@@ -33,8 +33,8 @@ samples_df <- read.csv("../metaphlan_full_metadata_mod2.csv", sep=',')
 # NA filling for empty values in samples metadata df
 samples_df <- samples_df %>% mutate(across(everything(), ~ifelse(.=="", NA, as.character(.))))
 # remaking date column
-samples_df[['Дата.забора.образца']] <- strptime(samples_df[['Дата.забора.образца']], 
-                                                format = "%d/%m/%y")
+# UPD 18/11/24: skip for now, smth wrong during conversion
+#samples_df[['Дата.забора.образца']] <- strptime(samples_df[['Дата.забора.образца']], format = "%d/%m/%y")
 
 # making age column as factor
 samples_df$Возраст = cut(as.numeric(samples_df$Возраст), breaks = 4, 
@@ -42,8 +42,8 @@ samples_df$Возраст = cut(as.numeric(samples_df$Возраст), breaks = 
 # non_numeric_cols <- sapply(samples_df, is.character)
 # samples_df[non_numeric_cols] <- lapply(samples_df[non_numeric_cols==TRUE], as.factor)
 # remove underscore to reach consistency in sample IDs
-
-
+samples_df$Вес <- as.numeric(samples_df$Вес)
+samples_df$Рост <- as.numeric(samples_df$Рост)
 colnames(otu_count_df)<-gsub("_","",colnames(otu_count_df))
 ```
 
@@ -64,7 +64,21 @@ SAMPLES = sample_data(samples_df)
 ps_phyloseq <- phyloseq(OTU, TAX, SAMPLES)
 #create sample id
 ps_phyloseq@sam_data$sample_id <- row.names(ps_phyloseq@sam_data)
+# UPD 18/11/24: create BMI column just for fun
+#ps_phyloseq@sam_data$BMI <- ps_phyloseq@sam_data$Вес/((ps_phyloseq@sam_data$Рост/100)**2)
+```
 
+```{r remembering functions}
+#simple calc failed, both have NAs, so we need to do it with function
+calculate_bmi <- function(weight, height) {
+  if (is.na(weight) || is.na(height)) {
+    return(NA)  # Skip calculation if either value is NA
+  } else {
+    bmi <- weight / ((height/100)^2)  # Calculate BMI only if both values are provided
+    return(bmi)
+  }
+}
+ps_phyloseq@sam_data$BMI <- mapply(calculate_bmi, ps_phyloseq@sam_data$Вес, ps_phyloseq@sam_data$Рост)
 ```
 
 ```{r cleaning phyloseq obj}
@@ -81,7 +95,7 @@ ps_obj <- ps_phyloseq # copy of original phyloseq obj
 
 df <- as.data.frame(as.matrix(ps_obj@sam_data))
 
-cols_to_keep <- c("Возраст","Пол", "Вес",'Артериальная.гипертензия','СД', "Стадия.тяжести.пародонтита", 'Курение.в.настоящее.время') # for example
+cols_to_keep <- c("Возраст","Пол", "Вес",'Артериальная.гипертензия','СД', "Стадия.тяжести.пародонтита", 'Курение.в.настоящее.время', "PCR.RT..Гингипол..Литех.Porphyromonas.gingivalis", "Как.давно.бросил.курить", 'АБ.за.полгода') # for example
 
 df_f <- select(df, all_of(cols_to_keep))
 
@@ -112,16 +126,16 @@ df$df_sample <- row.names(df)
 ```
 
 ```{r some testing plots and transformation, dev='png', fig.width=15, fig.height=10}
-ps_obj <- ps_phyloseq # copy of phyloseq 
+ps_obj <- ps_phyloseq # copy of original phyloseq 
 ps_obj
 ps_obj <- subset_samples(ps_phyloseq, Стадия.тяжести.пародонтита  =="средняя" & Пол == 'м')
-# only for strains
+# store only species for which strain data is available
 ps_obj <- subset_taxa(ps_obj, Strain != 'None')
 ps_obj
-# Genus-level only
+# agglom up to genus rank
 ps_obj <- speedyseq::tax_glom(ps_obj,taxrank = 'Genus', NArm=T ) # speedyseq пакет для филосека с быстрыми функциями
 ps_obj
-# normalizing https://microbiome.github.io/tutorials/
+# relative abundance and transformation, as in https://microbiome.github.io/tutorials/
 det <- 1
 prev<-50/100
 taxas <- core_members(ps_obj, detection = det, prevalence = prev)
@@ -129,25 +143,93 @@ ps_obj <- prune_taxa(taxas, ps_obj)
 ps_obj
 transformation <- 'compositional'
 ps_obj <- microbiome::transform(ps_obj, transformation)
-# 1st plot
-plot_bar(ps_obj, fill = "Genus")
-#smth wrong here, no idea now
+# simple rel.abundance plot
+plot_bar(ps_obj, fill = "Genus",title = "Relative abundance data, Genus level")
 ```
 
-```{r empty chunk, dev='png', fig.width=15, fig.height=10}
+```{r relative abundance v2, dev='png', fig.width=15, fig.height=10}
 # using microbiome pkg
 #scale_color_brewer has too small colors, instead use standard gradient palette
 p <- plot_composition(ps_obj,
                       taxonomic.level = "Genus",
-                      #sample.sort = "nationality",
                       x.label = "sample_id") +
   guides(fill = guide_legend(ncol = 1)) +
   scale_y_percent() +
   labs(x = "Samples", y = "Relative abundance (%)",
-       title = "Relative abundance data") + 
+       title = "Relative abundance data, Genus level") + 
   theme_ipsum(grid="Y") +
   theme(axis.text.x = element_text(angle=90, hjust=1),
         legend.text = element_text(face = "italic"))
 print(p)
 # this plot works
+```
+
+```{r subset 50+yrs and weight <=70 kg,dev='png', fig.width=15, fig.height=10}
+ps_obj <- subset_samples(ps_phyloseq, Вес<=70 & Возраст %in% c('(54.5-63.8]','(63.8-73]'))
+# agglom up to family rank
+ps_obj <- speedyseq::tax_glom(ps_subset_50yr_70kg,taxrank = 'Family', NArm=T )
+det <- 1
+prev<-50/100
+taxas <- core_members(ps_obj, detection = det, prevalence = prev)
+ps_obj <- prune_taxa(taxas, ps_obj)
+ps_obj
+transformation <- 'compositional'
+ps_obj <- microbiome::transform(ps_obj, transformation)
+plot_bar(ps_obj, fill = "Family", title = "Relative abundance data for 50+yrs \nadults less than 70 kg weight, Family level")
+```
+
+
+```{r subset 50+yrs and weight <=70 kg plot v2,dev='png', fig.width=15, fig.height=10}
+p <- plot_composition(ps_obj,
+                      taxonomic.level = "Family",
+                      x.label = "sample_id") +
+  guides(fill = guide_legend(ncol = 1)) +
+  scale_y_percent() +
+  labs(x = "Samples", y = "Relative abundance (%)",
+       title = "Relative abundance data for 50+yrs \nadults less than 70 kg weight, Family level") + 
+  theme_ipsum(grid="Y") +
+  theme(axis.text.x = element_text(angle=90, hjust=1),
+        legend.text = element_text(face = "italic"))
+print(p)
+```
+
+```{r how to get normal taxa names, dev='png', fig.width=15, fig.height=10 }
+# normal taxa names are stored in ps_obj@tax_table[,5] for Family, for example
+# we should use scale_fill_manual, I suppose, but couldn't get it work
+# I think it should be smth like this?
+# earlier we already agglomerated by Family, in theory it should be enough, but NOPE.
+p <- plot_composition(ps_obj,
+                      taxonomic.level = "Family",
+                      x.label = "sample_id") +
+  scale_y_percent() +
+  labs(x = "Samples", y = "Relative abundance (%)",
+       title = "Relative abundance data for 50+yrs \nadults less than 70 kg weight, Family level") + 
+  theme_ipsum(grid="Y") +
+  theme(axis.text.x = element_text(angle=90, hjust=1),
+        legend.text = element_text(face = "italic")) + 
+  scale_fill_manual(values=default_colors("Family")[as.vector(ps_obj@tax_table[,5])])
+```
+
+```{r species, dev='png', fig.width=15, fig.height=10 }
+ps_obj <- ps_phyloseq
+ps_obj <- speedyseq::tax_glom(ps_obj,taxrank = 'Species', NArm=T )
+det <- 1
+prev<-50/100
+taxas <- core_members(ps_obj, detection = det, prevalence = prev)
+ps_obj <- prune_taxa(taxas, ps_obj)
+ps_obj
+transformation <- 'compositional'
+ps_obj <- microbiome::transform(ps_obj, transformation)
+plot_bar(ps_obj, fill = "Species",title = "Relative abundance data, Species level, core members, compositional transformation")
+```
+
+```{r top 15 species, dev='png', fig.width=15, fig.height=10 }
+# what if top 15 species?
+ps_obj <- ps_phyloseq
+ps_obj <- speedyseq::tax_glom(ps_obj,taxrank = 'Species', NArm=T )
+ps_obj_top10_names <- names(sort(taxa_sums(ps_obj), TRUE)[1:15]) 
+#ps_obj_tops<- transform_sample_counts(ps_obj, function(s) s/sum(s))
+ps_obj_top10<-prune_taxa(ps_obj_top10_names, ps_obj )
+ps_obj_top10 <- transform_sample_counts(ps_obj_top10, function(x) x / sum(x))
+plot_bar(ps_obj_top10, fill='Species', title= 'Top 15 species across all samples')
 ```

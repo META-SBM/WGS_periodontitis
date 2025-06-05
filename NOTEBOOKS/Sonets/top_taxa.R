@@ -1,4 +1,4 @@
-ibrary(microViz)
+library(microViz)
 library(phyloseq)
 library(ggplot2)
 library(patchwork)

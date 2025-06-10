@@ -1,0 +1,779 @@
+#function
+```{r}
+# Complete code for PERMANOVA analysis with properly matched colors
+
+# Load required libraries
+library(phyloseq)
+library(microbiome)
+library(vegan)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(forcats)
+library(gridExtra)
+library(patchwork)
+library(ggforce)
+
+# Helper function to run a single PERMANOVA for one phyloseq
+run_single_permanova <- function(ps_obj, name, formula, method = "bray", 
+                               transformation = "None", handle_nas = TRUE) {
+  # Convert sample data to a data frame
+  metadf <- as.data.frame(as.matrix(ps_obj@sam_data))
+  
+  # Handle phyloseq with NAs if requested
+  if (handle_nas) {
+    # Check if OTU table has NAs
+    otu <- as(otu_table(ps_obj), "matrix")
+    if (any(is.na(otu))) {
+      message(paste("Found NAs in", name, "- cleaning data before analysis"))
+      
+      # Replace NAs with zeros
+      otu[is.na(otu)] <- 0
+      
+      # Reconstruct phyloseq object
+      otu_table(ps_obj) <- otu_table(otu, taxa_are_rows = taxa_are_rows(ps_obj))
+    }
+  }
+  
+  # Apply transformations based on distance method
+  if (method == 'euclidean'){
+    # Force CLR transformation for Euclidean distance
+    ps_obj <- microbiome::transform(ps_obj, "clr")
+  } else if (method == 'uunifrac'){
+    # No specific transformation for UniFrac
+  } else if (transformation != "None") {
+    # Apply specified transformation
+    ps_obj <- microbiome::transform(ps_obj, transformation)
+  }
+  
+  # Calculate distance matrix based on the specified method
+  dist <- phyloseq::distance(ps_obj, method = method)
+  
+  # Create formula from the string
+  formula1 <- as.formula(paste("dist ~", formula))
+  
+  # Perform adonis analysis with the specified formula
+  permanova_result <- adonis2(formula1, data = metadf, by = 'term', parallel = 30)
+  
+  # Process adonis results
+  res <- as.data.frame(permanova_result)
+  res$meta <- row.names(res)
+  res <- subset(res, res$meta != 'Total')
+
+  # Add significance markers
+  res[which(res$`Pr(>F)` > 0.1), 'signif'] <- ' '
+  res[which(res$`Pr(>F)` <=  0.1), 'signif'] <- '.'
+  res[which(res$`Pr(>F)` <= 0.05), 'signif'] <- '*'
+  res[which(res$`Pr(>F)` <= 0.01), 'signif'] <- '**'
+  res[which(res$`Pr(>F)` <= 0.001), 'signif'] <- '***'
+  
+  # Keep original R2 values but also add percentage column for reference
+  res$R2_percent <- res$R2 * 100
+  
+  # Add dataset name
+  res$Dataset <- name
+  
+  # Print debugging info to help identify residuals row names
+  message(paste("Row names in result for", name, ":", paste(res$meta, collapse=", ")))
+  
+  return(list(
+    result = list(
+      permanova_result = permanova_result,
+      processed_result = res
+    ),
+    data = res
+  ))
+}
+
+# Helper function to create the PERMANOVA plot
+create_permanova_plot <- function(data, title, color_palette, 
+                                 x_label = "R²", 
+                                 y_label = "Features") {
+  
+  # Add alpha based on significance: significant (p ≤ 0.1) gets alpha = 1, non-significant gets alpha = 0.5
+  data$alpha_value <- ifelse(data$signif == ' ', 0.5, 1.0)
+  
+  # Create the grouped barplot with R2 values (not percentages)
+  p <- ggplot(data, aes(x = R2, y = Feature, fill = Dataset, alpha = alpha_value)) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.9), width = 0.8) +
+    scale_alpha_identity() +  # Use the alpha values directly
+    geom_text(aes(label = signif), position = position_dodge(width = 0.9), 
+              hjust = -0.3, size = 8) +
+    labs(title = title,
+         x = x_label,
+         y = y_label) +
+    scale_fill_manual(values = color_palette) +
+    theme_bw() +
+    theme(panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank(),
+          panel.border = element_rect(color = "black", fill = NA),
+          axis.title = element_text(face = "bold"),
+          axis.title.x = element_text( size = 17),    # X-axis title (R²)
+          axis.title.y = element_text( size = 17),
+          plot.title = element_text(hjust = 0.5, face = "bold"),
+          axis.text.y = element_text(face = "bold",size=15, colour= 'black'),
+          axis.text.x = element_text(size=15, colour= 'black'),
+          legend.title = element_text(face = "bold",size=15,colour= 'black'),
+          legend.position = "right") +
+    scale_x_continuous(expand = expansion(mult = c(0, 0.25)))  # Add space for the significance markers
+  
+  return(p)
+}
+
+# Helper function to process combined data for plotting
+process_combined_data <- function(combined_df) {
+  if (nrow(combined_df) == 0) return(combined_df)
+  
+  # Calculate mean R2 per feature for ordering
+  feature_means <- combined_df %>%
+    group_by(meta) %>%
+    summarize(mean_R2 = mean(R2, na.rm = TRUE))
+  
+  # Create ordered factor for features
+  feature_order <- feature_means$meta[order(feature_means$mean_R2)]
+  combined_df$Feature <- factor(combined_df$meta, levels = feature_order)
+  
+  return(combined_df)
+}
+
+# Fixed create_final_improved_donut_plot function
+create_final_improved_donut_plot <- function(variance_data, title = "Variance Explained", 
+                                           color_palette = NULL, names_list = NULL) {
+  library(ggplot2)
+  library(ggforce)  # For geom_arc_bar
+  
+  # Transform data for pie charts
+  pie_data <- data.frame()
+  
+  # FIX: If names_list is provided, use it to order the data and colors
+  if (!is.null(names_list)) {
+    # Ensure variance_data is ordered according to names_list
+    variance_data$Dataset <- factor(variance_data$Dataset, levels = names_list)
+    variance_data <- variance_data[order(variance_data$Dataset), ]
+    
+    # Create color mapping based on names_list order
+    color_mapping <- setNames(color_palette[1:length(names_list)], names_list)
+  } else {
+    # Fallback to alphabetical order if names_list not provided
+    unique_datasets <- unique(variance_data$Dataset)
+    color_mapping <- setNames(color_palette[1:length(unique_datasets)], unique_datasets)
+  }
+  
+  # Assign colors based on dataset names
+  explained_colors <- character(nrow(variance_data))
+  unexplained_colors <- character(nrow(variance_data))
+  
+  for (i in 1:nrow(variance_data)) {
+    dataset_name <- as.character(variance_data$Dataset[i])
+    if (dataset_name %in% names(color_mapping)) {
+      explained_colors[i] <- color_mapping[dataset_name]
+      unexplained_colors[i] <- color_mapping[dataset_name]
+    } else {
+      # Fallback for unknown dataset names
+      explained_colors[i] <- color_palette[min(i, length(color_palette))]
+      unexplained_colors[i] <- color_palette[min(i, length(color_palette))]
+    }
+  }
+  
+  # FIX: Create radius mapping based on names_list order if provided
+  if (!is.null(names_list)) {
+    radius_mapping <- setNames(length(names_list):1, names_list)
+  } else {
+    # Default mapping
+    radius_mapping <- c("Species" = 3, "Pathways" = 2, "MAGs" = 1)
+  }
+  
+  radius_order <- numeric(nrow(variance_data))
+  
+  for (i in 1:nrow(variance_data)) {
+    dataset_name <- as.character(variance_data$Dataset[i])
+    if (dataset_name %in% names(radius_mapping)) {
+      radius_order[i] <- radius_mapping[dataset_name]
+    } else {
+      # Default ordering for unknown datasets
+      radius_order[i] <- nrow(variance_data) - i + 1
+    }
+  }
+  
+  # For each dataset, create a row for each segment
+  for (i in 1:nrow(variance_data)) {
+    dataset <- as.character(variance_data$Dataset[i])
+    radius <- radius_order[i]  # Use the assigned radius
+    
+    # Add Explained segment
+    pie_data <- rbind(pie_data, data.frame(
+      dataset = dataset,
+      type = "Explained",
+      value = variance_data$Explained[i],
+      percentage = variance_data$Explained[i] * 100,
+      radius = radius,
+      fill_color = explained_colors[i],
+      alpha_value = 1.0,  # Full opacity for explained
+      stringsAsFactors = FALSE
+    ))
+    
+    # Add Unexplained segment
+    pie_data <- rbind(pie_data, data.frame(
+      dataset = dataset,
+      type = "Unexplained",
+      value = variance_data$Unexplained[i],
+      percentage = variance_data$Unexplained[i] * 100,
+      radius = radius,
+      fill_color = unexplained_colors[i],
+      alpha_value = 0.5,  # Semi-transparent for unexplained
+      stringsAsFactors = FALSE
+    ))
+  }
+  
+  # Sort data by dataset and segment type
+  pie_data <- pie_data[order(pie_data$radius, pie_data$type), ]
+  
+  # Calculate start and end angles for each segment
+  # Process each dataset separately to get cumulative fractions
+  for (ds in unique(pie_data$dataset)) {
+    ds_rows <- which(pie_data$dataset == ds)
+    
+    # Get total for this dataset (should be 1.0)
+    ds_total <- sum(pie_data$value[ds_rows])
+    
+    # Calculate fractions
+    pie_data$fraction[ds_rows] <- pie_data$value[ds_rows] / ds_total
+    
+    # Calculate end angles (cumulative)
+    end_angle <- cumsum(pie_data$fraction[ds_rows]) * 2 * pi
+    
+    # Calculate start angles
+    start_angle <- c(0, end_angle[-length(end_angle)])
+    
+    # Assign to data frame
+    pie_data$start[ds_rows] <- start_angle
+    pie_data$end[ds_rows] <- end_angle
+    
+    # Calculate midpoint for label placement
+    pie_data$mid[ds_rows] <- (start_angle + end_angle) / 2
+  }
+  
+  # Create the base plot
+  p <- ggplot(pie_data) +
+    geom_arc_bar(aes(
+      x0 = 0, y0 = 0, 
+      r0 = radius - 0.4, r = radius + 0.4,
+      start = start, end = end, 
+      fill = fill_color,
+      alpha = alpha_value  # Add alpha aesthetic
+    )) +
+    coord_fixed() +
+    theme_void() +
+    labs(title = title)
+  
+  # Manually set colors with alpha
+  fill_values <- c(explained_colors[1:nrow(variance_data)], unexplained_colors[1:nrow(variance_data)])
+  names(fill_values) <- c(explained_colors[1:nrow(variance_data)], unexplained_colors[1:nrow(variance_data)])
+  
+  p <- p + scale_fill_identity() + scale_alpha_identity()  # Use identity scales for custom colors and alpha
+  
+  # Add percentage labels INSIDE the segments
+  # Create segment_info based on actual dataset names and their positions
+  segment_info <- list()
+  
+  for (i in 1:nrow(variance_data)) {
+    dataset_name <- as.character(variance_data$Dataset[i])
+    if (dataset_name %in% names(radius_mapping)) {
+      r <- radius_mapping[dataset_name]
+    } else {
+      r <- nrow(variance_data) - i + 1  # Default ordering
+    }
+    
+    # Add explained
+    segment_info <- append(segment_info, list(list(
+      dataset = dataset_name,
+      type = "Explained",
+      r = r,
+      angle = pi/2 - pi/12,
+      perc = round(variance_data$Explained[i] * 100)
+    )))
+    
+    # Add unexplained
+    segment_info <- append(segment_info, list(list(
+      dataset = dataset_name,
+      type = "Unexplained",
+      r = r,
+      angle = pi/2 + pi/12,
+      perc = round(variance_data$Unexplained[i] * 100)
+    )))
+  }
+  
+  # Add percentage labels with manual positioning
+  for (seg in segment_info) {
+    p <- p + annotate(
+      "text",
+      x = seg$r * cos(seg$angle),
+      y = seg$r * sin(seg$angle),
+      label = paste0(seg$perc, "%"),
+      color = "black",
+      fontface = "bold",
+      size = 5
+    )
+  }
+  
+  # Position category headers with more space
+  p <- p + annotate("text", x = 6, y = 3, label = "Explained Variance", 
+                    fontface = "bold", size = 5, hjust = 1)
+  p <- p + annotate("text", x = -6, y = 3, label = "Unexplained Variance", 
+                    fontface = "bold", size = 5, hjust = 0)
+  
+  # Get reference points for each segment using correct radius mapping
+  reference_points <- list()
+  
+  # Build reference points based on actual order in names_list if provided
+  if (!is.null(names_list)) {
+    for (i in 1:length(names_list)) {
+      dataset <- names_list[i]
+      r <- radius_mapping[dataset]
+      
+      # RIGHT SIDE (Explained)
+      reference_points <- append(reference_points, list(list(
+        dataset = dataset, side = "right", 
+        x = r * cos(pi/2 - pi/12), y = r * sin(pi/2 - pi/12)
+      )))
+      
+      # LEFT SIDE (Unexplained)
+      reference_points <- append(reference_points, list(list(
+        dataset = dataset, side = "left", 
+        x = r * cos(pi/2 + pi/12), y = r * sin(pi/2 + pi/12)
+      )))
+    }
+  } else {
+    # Default reference points if names_list not provided
+    reference_points <- list(
+      # RIGHT SIDE (Explained)
+      list(dataset = "Species", side = "right", x = 3 * cos(pi/2 - pi/12), y = 3 * sin(pi/2 - pi/12)),
+      list(dataset = "Pathways", side = "right", x = 2 * cos(pi/2 - pi/12), y = 2 * sin(pi/2 - pi/12)),
+      list(dataset = "MAGs", side = "right", x = 1 * cos(pi/2 - pi/12), y = 1 * sin(pi/2 - pi/12)),
+      
+      # LEFT SIDE (Unexplained)
+      list(dataset = "Species", side = "left", x = 3 * cos(pi/2 + pi/12), y = 3 * sin(pi/2 + pi/12)),
+      list(dataset = "Pathways", side = "left", x = 2 * cos(pi/2 + pi/12), y = 2 * sin(pi/2 + pi/12)),
+      list(dataset = "MAGs", side = "left", x = 1 * cos(pi/2 + pi/12), y = 1 * sin(pi/2 + pi/12))
+    )
+  }
+  
+  # Update the label colors to match the new alpha system
+  # For explained variance (full color) - using color_mapping
+  explained_label_colors <- character(nrow(variance_data))
+  # For unexplained variance (lighter appearance due to alpha - create lighter versions)
+  unexplained_label_colors <- character(nrow(variance_data))
+  
+  for (i in 1:nrow(variance_data)) {
+    dataset_name <- as.character(variance_data$Dataset[i])
+    if (dataset_name %in% names(color_mapping)) {
+      explained_label_colors[i] <- color_mapping[dataset_name]
+      unexplained_label_colors[i] <- adjustcolor(color_mapping[dataset_name], alpha.f = 0.7)
+    } else {
+      explained_label_colors[i] <- color_palette[min(i, length(color_palette))]
+      unexplained_label_colors[i] <- adjustcolor(color_palette[min(i, length(color_palette))], alpha.f = 0.7)
+    }
+  }
+  
+  # Define dataset display order from names_list or default
+  dataset_order <- if (!is.null(names_list)) names_list else c("Species", "Pathways", "MAGs")
+  
+  # Add RIGHT side labels with connections to Explained segments
+  for (i in 1:length(dataset_order)) {
+    dataset <- dataset_order[i]
+    dataset_index <- which(as.character(variance_data$Dataset) == dataset)
+    
+    if (length(dataset_index) > 0) {
+      # Find the correct reference point based on the dataset
+      ref_idx <- which(sapply(reference_points, function(x) x$dataset == dataset && x$side == "right"))
+      
+      if (length(ref_idx) > 0) {
+        ref_point <- reference_points[[ref_idx[1]]]
+        
+        # Add dataset label with MORE SPACE
+        p <- p + annotate(
+          "text",
+          x = 6.5,  # Increased distance from end of line
+          y = 2 - (i-1) * 0.7,
+          label = dataset,
+          color = explained_label_colors[dataset_index],  # Use explained colors
+          fontface = "bold",
+          size = 4.5,
+          hjust = 1
+        )
+        
+        # Add connection line - STOPPING FARTHER FROM TEXT
+        p <- p + annotate(
+          "segment",
+          x = ref_point$x,
+          y = ref_point$y,
+          xend = 5.5,  # Stop the line with MORE gap before text
+          yend = 2 - (i-1) * 0.7,
+          color = "black",
+          size = 0.2
+        )
+      }
+    }
+  }
+  
+  # Add LEFT side labels with connections to Unexplained segments
+  for (i in 1:length(dataset_order)) {
+    dataset <- dataset_order[i]
+    dataset_index <- which(as.character(variance_data$Dataset) == dataset)
+    
+    if (length(dataset_index) > 0) {
+      # Find the correct reference point based on the dataset
+      ref_idx <- which(sapply(reference_points, function(x) x$dataset == dataset && x$side == "left"))
+      
+      if (length(ref_idx) > 0) {
+        ref_point <- reference_points[[ref_idx[1]]]
+        
+        # Add dataset label with MORE SPACE
+        p <- p + annotate(
+          "text",
+          x = -6.5,  # Increased distance from end of line
+          y = 2 - (i-1) * 0.7,
+          label = dataset,
+          color = unexplained_label_colors[dataset_index],  # Use lighter colors
+          fontface = "bold",
+          size = 4.5,
+          hjust = 0
+        )
+        
+        # Add connection line - STOPPING FARTHER FROM TEXT
+        p <- p + annotate(
+          "segment",
+          x = ref_point$x,
+          y = ref_point$y,
+          xend = -5.5,  # Stop the line with MORE gap before text
+          yend = 2 - (i-1) * 0.7,
+          color = "black",
+          size = 0.2
+        )
+      }
+    }
+  }
+  
+  # Finalize plot
+  p <- p + 
+    xlim(-8, 8) +  # Expanded limits to accommodate more space
+    ylim(-4, 4) +
+    theme(
+      plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+      legend.position = "none"  # Remove legend since colors are clear from the alpha
+    )
+  
+  return(p)
+}
+
+# Updated run_dual_permanova_plots function with fixed color ordering
+run_dual_permanova_plots <- function(ps_list, names_list, formula, 
+                                   title_prefix = "PERMANOVA Results",
+                                   color_palette = NULL,
+                                   handle_nas = TRUE) {
+  
+  # Required libraries
+  require(phyloseq)
+  require(microbiome)
+  require(vegan)
+  require(ggplot2)
+  require(dplyr)
+  require(tidyr)
+  require(forcats)
+  require(gridExtra)
+  require(patchwork) # For combining plots
+  
+  # Check inputs
+  if (!is.list(ps_list)) {
+    stop("ps_list must be a list of phyloseq objects")
+  }
+  if (length(ps_list) != length(names_list)) {
+    stop("ps_list and names_list must have the same length")
+  }
+  
+  # Set default color palette if not provided
+  if (is.null(color_palette)) {
+    color_palette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#999999")
+    # Extend color palette if needed
+    if (length(ps_list) > length(color_palette)) {
+      color_palette <- colorRampPalette(color_palette)(length(ps_list))
+    }
+  }
+  
+  # IMPORTANT: Create a named color vector that matches names_list order
+  named_colors <- setNames(color_palette[1:length(names_list)], names_list)
+  
+  # Create empty lists to store results
+  bray_results <- list(all_results = list(), combined_data = data.frame())
+  euclidean_results <- list(all_results = list(), combined_data = data.frame())
+  
+  # Create data frames to store variance values for each dataset
+  bray_variance <- data.frame(Dataset = character(), Explained = numeric(), Unexplained = numeric(), stringsAsFactors = FALSE)
+  euclidean_variance <- data.frame(Dataset = character(), Explained = numeric(), Unexplained = numeric(), stringsAsFactors = FALSE)
+  
+  # Process each phyloseq object separately
+  for (i in 1:length(ps_list)) {
+    ps_obj <- ps_list[[i]]
+    name <- names_list[i]
+    
+    # Try to run Bray-Curtis analysis
+    tryCatch({
+      bray_result <- run_single_permanova(
+        ps_obj = ps_obj,
+        name = name,
+        formula = formula,
+        method = "bray",
+        transformation = "compositional",
+        handle_nas = handle_nas
+      )
+      
+      # Store full results
+      bray_results$all_results[[name]] <- bray_result$result
+      
+      # Add to combined data frame (for full results reference)
+      bray_results$combined_data <- rbind(bray_results$combined_data, bray_result$data)
+      
+      # Get the residuals row by checking for both possible row names
+      residuals_row <- bray_result$data %>% 
+        filter(grepl("^Residual", meta, ignore.case = TRUE) | meta == "other")
+      
+      # Calculate explained variance as 1 - R2 of residual
+      # Default to 0 if no residual row found (should not happen in normal adonis2 output)
+      explained_variance <- if(nrow(residuals_row) > 0) {
+        1 - residuals_row$R2[1]  # Using raw R2, not percentage
+      } else {
+        message(paste("Warning: No residual row found for", name, "with Bray-Curtis method"))
+        0
+      }
+      
+      # Calculate unexplained variance
+      unexplained_variance <- 1 - explained_variance
+      
+      # Store the variance values for this dataset
+      bray_variance <- rbind(bray_variance, data.frame(
+        Dataset = name,
+        Explained = explained_variance,
+        Unexplained = unexplained_variance,
+        stringsAsFactors = FALSE
+      ))
+      
+    }, error = function(e) {
+      message(paste("Error in Bray-Curtis analysis for", name, ":", e$message))
+    })
+    
+    # Try to run Euclidean analysis
+    tryCatch({
+      euclidean_result <- run_single_permanova(
+        ps_obj = ps_obj,
+        name = name,
+        formula = formula,
+        method = "euclidean",
+        transformation = "clr",
+        handle_nas = handle_nas
+      )
+      
+      # Store full results
+      euclidean_results$all_results[[name]] <- euclidean_result$result
+      
+      # Add to combined data frame (for full results reference)
+      euclidean_results$combined_data <- rbind(euclidean_results$combined_data, euclidean_result$data)
+      
+      # Get the residuals row by checking for both possible row names
+      residuals_row <- euclidean_result$data %>% 
+        filter(grepl("^Residual", meta, ignore.case = TRUE) | meta == "other")
+      
+      # Calculate explained variance as 1 - R2 of residual
+      # Default to 0 if no residual row found (should not happen in normal adonis2 output)
+      explained_variance <- if(nrow(residuals_row) > 0) {
+        1 - residuals_row$R2[1]  # Using raw R2, not percentage
+      } else {
+        message(paste("Warning: No residual row found for", name, "with Euclidean method"))
+        0
+      }
+      
+      # Calculate unexplained variance
+      unexplained_variance <- 1 - explained_variance
+      
+      # Store the variance values for this dataset
+      euclidean_variance <- rbind(euclidean_variance, data.frame(
+        Dataset = name,
+        Explained = explained_variance,
+        Unexplained = unexplained_variance,
+        stringsAsFactors = FALSE
+      ))
+      
+    }, error = function(e) {
+      message(paste("Error in Euclidean analysis for", name, ":", e$message))
+    })
+  }
+  
+  # Process combined data for plotting (if we have results)
+  bray_plot <- NULL
+  bray_combined_plot <- NULL
+  if (nrow(bray_results$combined_data) > 0) {
+    # Improved residuals removal with case-insensitive pattern matching
+    bray_plot_data <- bray_results$combined_data %>% 
+      filter(!grepl("^Residual", meta, ignore.case = TRUE) & meta != "other")
+    
+    # FIX: Ensure Dataset column is ordered according to names_list
+    bray_plot_data$Dataset <- factor(bray_plot_data$Dataset, levels = names_list)
+    
+    # Process the filtered data
+    bray_plot_data <- process_combined_data(bray_plot_data)
+    
+    # Create the plot without residuals
+    bray_plot <- create_permanova_plot(
+      data = bray_plot_data,
+      title = paste0(title_prefix, ": Bray-Curtis (Compositional)"),
+      color_palette = named_colors  # Use named colors
+    )
+    
+    # Create COMBINED bar + donut plot for Bray-Curtis
+    if (nrow(bray_variance) > 0) {
+      # FIX: Ensure variance data is also ordered according to names_list
+      bray_variance$Dataset <- factor(bray_variance$Dataset, levels = names_list)
+      bray_variance <- bray_variance[order(bray_variance$Dataset), ]
+      
+      bray_donut_plot <- create_final_improved_donut_plot(
+        variance_data = bray_variance,
+        title = "Variance Explained (Bray-Curtis)",
+        color_palette = color_palette,  # Pass the original palette
+        names_list = names_list  # Pass names_list for ordering
+      )
+      
+      # Place bar plot and donut plot side by side - INCREASED DONUT SPACE
+      bray_combined_plot <- bray_plot + bray_donut_plot + plot_layout(ncol = 2, widths = c(2, 2))
+    }
+  } else {
+    message("No Bray-Curtis results available for plotting")
+  }
+  
+  euclidean_plot <- NULL
+  euclidean_combined_plot <- NULL
+  if (nrow(euclidean_results$combined_data) > 0) {
+    # Improved residuals removal with case-insensitive pattern matching
+    euclidean_plot_data <- euclidean_results$combined_data %>% 
+      filter(!grepl("^Residual", meta, ignore.case = TRUE) & meta != "other")
+    
+    # FIX: Ensure Dataset column is ordered according to names_list
+    euclidean_plot_data$Dataset <- factor(euclidean_plot_data$Dataset, levels = names_list)
+    
+    # Process the filtered data
+    euclidean_plot_data <- process_combined_data(euclidean_plot_data)
+    
+    # Create the plot without residuals
+    euclidean_plot <- create_permanova_plot(
+      data = euclidean_plot_data,
+      title = paste0(title_prefix, ": Euclidean (CLR)"),
+      color_palette = named_colors  # Use named colors
+    )
+    
+    # Create COMBINED bar + donut plot for Euclidean
+    if (nrow(euclidean_variance) > 0) {
+      # FIX: Ensure variance data is also ordered according to names_list
+      euclidean_variance$Dataset <- factor(euclidean_variance$Dataset, levels = names_list)
+      euclidean_variance <- euclidean_variance[order(euclidean_variance$Dataset), ]
+      
+      euclidean_donut_plot <- create_final_improved_donut_plot(
+        variance_data = euclidean_variance,
+        title = "Variance Explained (Euclidean)",
+        color_palette = color_palette,  # Pass the original palette
+        names_list = names_list  # Pass names_list for ordering
+      )
+      # Place bar plot and donut plot side by side - INCREASED DONUT SPACE
+     euclidean_combined_plot <- euclidean_plot + euclidean_donut_plot + plot_layout(ncol = 2, widths = c(2, 2))
+   }
+ } else {
+   message("No Euclidean results available for plotting")
+ }
+ 
+ # Create donut plots for both methods and combine them
+ combined_donut_plot <- NULL
+ if (nrow(bray_variance) > 0 && nrow(euclidean_variance) > 0) {
+   # Create Bray-Curtis donut plot
+   bray_donut_only <- create_final_improved_donut_plot(
+     variance_data = bray_variance,
+     title = "Variance Explained (Bray-Curtis)",
+     color_palette = color_palette,  # Pass the original palette
+     names_list = names_list  # Pass names_list for ordering
+   )
+   
+   # Create Euclidean donut plot
+   euclidean_donut_only <- create_final_improved_donut_plot(
+     variance_data = euclidean_variance,
+     title = "Variance Explained (Euclidean)",
+     color_palette = color_palette,  # Pass the original palette
+     names_list = names_list  # Pass names_list for ordering
+   )
+   
+   # Combine both donut plots side by side
+   combined_donut_plot <- bray_donut_only + euclidean_donut_only + 
+     plot_layout(ncol = 2, widths = c(1, 1))
+ } else if (nrow(bray_variance) > 0) {
+   # Only Bray-Curtis available
+   combined_donut_plot <- create_final_improved_donut_plot(
+     variance_data = bray_variance,
+     title = "Variance Explained (Bray-Curtis)",
+     color_palette = color_palette,  # Pass the original palette
+     names_list = names_list  # Pass names_list for ordering
+   )
+ } else if (nrow(euclidean_variance) > 0) {
+   # Only Euclidean available
+   combined_donut_plot <- create_final_improved_donut_plot(
+     variance_data = euclidean_variance,
+     title = "Variance Explained (Euclidean)",
+     color_palette = color_palette,  # Pass the original palette
+     names_list = names_list  # Pass names_list for ordering
+   )
+ }
+ 
+ # Return results
+ return(list(
+   bray_results = bray_results,
+   euclidean_results = euclidean_results,
+   bray_plot = bray_plot,
+   euclidean_plot = euclidean_plot,
+   bray_combined_plot = bray_combined_plot,
+   euclidean_combined_plot = euclidean_combined_plot,
+   combined_donut_plot = combined_donut_plot,  # New: Combined donut plot
+   bray_variance = bray_variance,
+   euclidean_variance = euclidean_variance
+ ))
+}
+
+
+
+
+```
+
+#usage
+```{r, fig.width=26, fig.height=8}
+# Create list of phyloseq objects and their names
+ps_list <- list(ps, hm_phyloseq_joint,mags_ps_filtered)
+names_list <- c("Species", "Pathways", "MAGs")
+formula1='Age_group+BMI_group+Sex+Cardiovascular_diseases+Rheumatoid_arthritis+Antibiotics_treatment_in_last_6_months+Smoking_status+Stage_of_severity_of_periodontitis+Treatment_of_periodontitis'
+# Run the function with your specific color palette
+dual_results <- run_dual_permanova_plots(
+ ps_list = ps_list,
+ names_list = names_list,
+ formula = formula1,
+ title_prefix = "Impact on Microbial Community",
+ color_palette = c("#009E73", "#E69F00", "#56B4E9"),  # Green, Orange, Blue
+ handle_nas = TRUE
+)
+
+# Display different plot combinations:
+
+# Option 1: Show only donut plots side by side
+print(dual_results$combined_donut_plot)
+
+# Option 2: Show bar charts + donut plots for each method separately
+print(dual_results$bray_combined_plot)    # Bar + Donut for Bray-Curtis
+print(dual_results$euclidean_combined_plot) # Bar + Donut for Euclidean
+
+# Option 3: Show only bar charts
+print(dual_results$bray_plot)      # Bar chart for Bray-Curtis
+print(dual_results$euclidean_plot) # Bar chart for Euclidean
+```
+
+

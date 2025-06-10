@@ -1,0 +1,881 @@
+# DESeq2 code and plot
+#libs
+```{r}
+library(ggplot2)
+library(microbiome)
+ library(plyr)
+library(purrr)
+library(tibble)
+library(pheatmap)
+ library(vegan)
+library(patchwork)
+library(PNWColors)
+library(ggpubr)
+library(tidyr)
+library(grid)
+ library(readr)
+ library(Maaslin2)
+```
+
+#load WGS phyloseq and transform
+```{r}
+#ps_s_mean <-  readRDS('/home/ignatsonets/ps_deseq.rds')
+ps_s_mean <- microbiome::transform(ps_s_mean,transform = 'compositional')
+taxa <- as.data.frame(as.matrix(ps_s_mean@tax_table))
+taxa$SGB <- NULL
+tax_table(ps_s_mean)<- as.matrix(taxa)
+#ps_s_counts_mean <-  readRDS('/home/ignatsonets/ps_deseq.rds')
+tax_table(ps_s_counts_mean)<- as.matrix(taxa)
+```
+# MAGs phyloseq
+```{r}
+ps_s_counts_mean <-  readRDS('/home/ignatsonets/ps_mags_filt.rds')
+# Remove NAs from OTU table
+otu_mat <- as(otu_table(ps_s_counts_mean), "matrix")
+otu_na_rows <- apply(otu_mat, 1, function(x) any(is.na(x)))
+ps_s_counts_mean <- prune_taxa(!otu_na_rows, ps_s_counts_mean)
+# Remove taxa with NA in taxonomic table
+tax_na_rows <- apply(tax_table(ps_s_counts_mean), 1, function(x) any(is.na(x)))
+ps_s_counts_mean <- prune_taxa(!tax_na_rows, ps_s_counts_mean)
+taxa <- as.data.frame(as.matrix(ps_s_counts_mean@tax_table))
+taxa$SGB <- NULL
+tax_table(ps_s_counts_mean)<- as.matrix(taxa)
+tax_table(ps_s_counts_mean)<- as.matrix(taxa)
+```
+
+```{r}
+ps_s_mean@sam_data$Stage_of_severity_of_periodontitis
+ps_s_mean@sam_data$Treatment_of_periodontitis
+```
+#ps prevalence filtering
+```{r}
+ps_obj <- ps_s_mean
+#ps_obj <- subset_samples(ps_obj, !is.na(X7_CD3.CAR..µl_category))
+# Set the prevalence and detection thresholds
+prevalence <- 40/ 100
+detection <- 0
+
+# Identify core members
+taxas_s <- core_members(ps_obj, detection = detection, prevalence = prevalence, include.lowest = FALSE)
+
+# Prune taxa based on core members
+ps_pruned_rel <- prune_taxa(taxas_s, ps_obj)
+ ps_pruned_rel
+```
+```{r}
+table(ps_pruned_rel@sam_data$X7_CD3.CAR..µl_category)
+```
+
+#ps prevalence filtering pt.2
+```{r}
+ps_obj <- ps_s_counts_mean
+#ps_obj <- subset_samples(ps_obj, !is.na(X7_CD3.CAR..µl_category))
+# Set the prevalence and detection thresholds
+prevalence <- 40/ 100
+detection <- 0
+
+# Identify core members
+taxas_s <- core_members(ps_obj, detection = detection, prevalence = prevalence, include.lowest = FALSE)
+
+# Prune taxa based on core members
+ps_pruned_count<- prune_taxa(taxas_s, ps_obj)
+#table(ps_pruned_count@sam_data$X7_CD3.CAR..µl_category)
+ ps_pruned_count
+```
+#sigtab1 pseudocount
+```{r}
+create_sigtab <- function(ps_obj, diagdds, contrast, alpha = 0.05, minlfc = 1) {
+  
+  res <- results(diagdds, contrast = contrast,cooksCutoff = FALSE, independentFiltering=FALSE)
+  sigtab <- res[which(res$pvalue <= alpha), ]
+  sigtab <- sigtab[which(sigtab$log2FoldChange > minlfc | sigtab$log2FoldChange < -minlfc), ]
+  sigtab <- cbind(as(sigtab, "data.frame"), as(tax_table(ps_obj)[rownames(sigtab), ], "matrix"))
+  sigtab[which(sigtab$pvalue <= 0.05), 'signif'] <- '*'
+  sigtab[which(sigtab$pvalue <= 0.01), 'signif'] <- '**'
+  sigtab[which(sigtab$pvalue <= 0.001), 'signif'] <- '***'
+  sigtab <- sigtab[order(sigtab$log2FoldChange), ]
+  asv_sigtab <- as.data.frame(sigtab)
+  asv_sigtab$taxa <- paste(row.names( asv_sigtab), asv_sigtab$Genus, sep = "_")
+  asv_sigtab <- asv_sigtab %>%
+    mutate(group = case_when(log2FoldChange > 0 ~ contrast[2], log2FoldChange < 0 ~ contrast[3]))
+  asv_sigtab$model <- 'deseq2'
+  asv_sigtab$value <- contrast[2]
+  asv_sigtab$effect_size<- as.numeric(asv_sigtab$log2FoldChange)
+  return(asv_sigtab)
+}
+
+```
+# Deseq2 1st run
+```{r, fig.width=15, fig.height=45}
+# Load necessary libraries
+library(phyloseq)
+library(DESeq2)
+library(dplyr)
+library(tidyr)
+library(pheatmap)
+
+# Prepare and adjust the phyloseq object
+ps_obj <- ps_pruned_count
+ps_obj@otu_table <- ps_obj@otu_table + 1
+
+# Define the variables to loop over
+variables <- c("Stage_of_severity_of_periodontitis", 'Treatment_of_periodontitis')
+
+# Define contrasts for each variable
+contrasts <- list(
+  "Stage_of_severity_of_periodontitis" = c("Stage_of_severity_of_periodontitis", "severe", "mild"),
+  "Treatment_of_periodontitis" = c("Treatment_of_periodontitis", "y", "n")
+)
+
+# Initialize a list to store heatmap data tables for each variable
+heatmap_data_des_list <- list()
+
+# Loop over each variable to perform DESeq2 analysis and prepare data for heatmap
+for (variable in variables) {
+  
+  # Convert phyloseq object to DESeq2 object using the current variable
+  diagdds <- phyloseq_to_deseq2(ps_obj, as.formula(paste("~", variable)))
+  diagdds <- DESeq(diagdds, test = "Wald", fitType = "parametric")
+  
+  # Extract results for the current variable using the appropriate contrast
+  contrast <- contrasts[[variable]]
+  res <- results(diagdds, contrast = contrast, cooksCutoff = FALSE, independentFiltering = FALSE)
+  
+  # Create significant table for the current variable
+  sigtab <- create_sigtab(ps_obj, diagdds, contrast = contrast, alpha = 0.05, minlfc = 1)
+  rownames(sigtab) <- NULL
+  
+  # Prepare heatmap data
+  heatmap_data <- sigtab %>%
+    dplyr::select(Species, model, effect_size) %>%
+    pivot_wider(names_from = model, values_from = effect_size) %>%
+    column_to_rownames(var = "Species")
+  
+  # Convert all columns to numeric to ensure proper calculations
+  heatmap_data[] <- lapply(heatmap_data, function(x) as.numeric(as.character(x)))
+  
+  # Calculate row-wise mean L2FC values to order the rows
+  row_means <- rowMeans(heatmap_data, na.rm = TRUE)
+  
+  # Order the rows based on the mean L2FC values
+  #heatmap_data <- heatmap_data[order(row_means), ]
+  
+  # Define breaks for heatmap color scaling based on the max absolute value in the data
+  max_abs_value <- max(abs(heatmap_data), na.rm = TRUE)
+  breaks <- seq(-max_abs_value, max_abs_value, length.out = 101)
+  
+  # Plot the heatmap with the specified settings and store in the list
+  heatmap_plot <- pheatmap(
+    heatmap_data, 
+    cluster_rows = FALSE,    # Do not cluster rows
+    cluster_cols = FALSE,    # Do not cluster columns
+    color = color_palette, 
+    breaks = breaks,         # Define breaks for color scaling
+    number_color = "black",  # Color of numbers displayed in cells
+    fontsize_number = 12,    # Font size for numbers
+    display_numbers = TRUE,  # Display numbers in the heatmap cells
+    main = paste("Heatmap of Effect Sizes for", variable, "\nContrast:", 
+                contrast[2], "vs", contrast[3]), # Main title with contrast info
+    na_col = "white"         # Color for NA values
+  )
+  
+  # Store the heatmap data in the list with the variable name
+  heatmap_data_des_list[[variable]] <- heatmap_data
+  
+  # Optional: Print information about the current analysis
+  cat("\nAnalysis for variable:", variable, "\n")
+  cat("Contrast used:", paste(contrast[2], "vs", contrast[3]), "\n")
+  cat("Number of significant species:", nrow(heatmap_data), "\n\n")
+}
+
+# Return or print the list of heatmap data tables
+heatmap_data_des_list
+
+
+
+```
+
+# sigtab2 postcount
+```{r}
+create_sigtab2 <- function(ps_obj, diagdds, contrast, alpha = 0.05, minlfc = 1) {
+  
+  res <- results(diagdds, contrast = contrast,cooksCutoff = FALSE, independentFiltering=FALSE)
+  sigtab <- res[which(res$pvalue <= alpha), ]
+  sigtab <- sigtab[which(sigtab$log2FoldChange > minlfc | sigtab$log2FoldChange < -minlfc), ]
+  sigtab <- cbind(as(sigtab, "data.frame"), as(tax_table(ps_obj)[rownames(sigtab), ], "matrix"))
+  sigtab[which(sigtab$pvalue <= 0.05), 'signif'] <- '*'
+  sigtab[which(sigtab$pvalue <= 0.01), 'signif'] <- '**'
+  sigtab[which(sigtab$pvalue <= 0.001), 'signif'] <- '***'
+  sigtab <- sigtab[order(sigtab$log2FoldChange), ]
+  asv_sigtab <- as.data.frame(sigtab)
+    asv_sigtab$feature <- row.names(asv_sigtab)
+  asv_sigtab <- asv_sigtab %>%
+    mutate(group = case_when(log2FoldChange > 0 ~ contrast[2], log2FoldChange < 0 ~ contrast[3]))
+  asv_sigtab$model <- 'deseq2_posount'
+  asv_sigtab$value <- contrast[2]
+  asv_sigtab$effect_size<- as.numeric(asv_sigtab$log2FoldChange)
+  return(asv_sigtab )
+}
+```
+# DESeq2 postocunt
+```{r, fig.width=15, fig.height=45}
+# Load necessary libraries
+library(phyloseq)
+library(DESeq2)
+library(dplyr)
+library(tidyr)
+library(pheatmap)
+# Add this before your loop to define the color palette
+library(RColorBrewer)
+color_palette <- colorRampPalette(rev(brewer.pal(n = 11, name = "RdBu")))(100)
+# Prepare and adjust the phyloseq object
+# Prepare and adjust the phyloseq object
+ps_obj <- ps_pruned_count
+#ps_obj@otu_table <- ps_obj@otu_table + 1  # Commented out as in your code
+
+# Define the variables to loop over
+variables <- c("Stage_of_severity_of_periodontitis", 'Treatment_of_periodontitis')
+
+# Define contrasts for each variable
+contrasts <- list(
+  "Stage_of_severity_of_periodontitis" = c("Stage_of_severity_of_periodontitis", "severe", "mild"),
+  "Treatment_of_periodontitis" = c("Treatment_of_periodontitis", "yes", "no")
+)
+
+# Initialize a list to store heatmap data tables for each variable
+heatmap_data_des_list2 <- list()
+
+# Loop over each variable to perform DESeq2 analysis and prepare data for heatmap
+for (variable in variables) {
+  
+  # Convert phyloseq object to DESeq2 object using the current variable
+  diagdds <- phyloseq_to_deseq2(ps_obj, as.formula(paste("~", variable)))
+  diagdds <- DESeq(diagdds, test = "Wald", fitType = "parametric", sfType = "poscounts")
+  
+  # Extract results for the current variable using the appropriate contrast
+  contrast <- contrasts[[variable]]
+  res <- results(diagdds, contrast = contrast, cooksCutoff = FALSE, independentFiltering = FALSE)
+  
+  # Create significant table for the current variable
+  sigtab <- create_sigtab2(ps_obj, diagdds, contrast = contrast, alpha = 0.05, minlfc = 1)
+  rownames(sigtab) <- NULL
+  
+  # Prepare heatmap data
+  heatmap_data <- sigtab %>%
+    dplyr::select(Species, model, effect_size) %>%
+    pivot_wider(names_from = model, values_from = effect_size) %>%
+    column_to_rownames(var = "Species")
+  
+  # Convert all columns to numeric to ensure proper calculations
+  heatmap_data[] <- lapply(heatmap_data, function(x) as.numeric(as.character(x)))
+  
+  # Calculate row-wise mean L2FC values to order the rows
+  row_means <- rowMeans(heatmap_data, na.rm = TRUE)
+  
+  # Order the rows based on the mean L2FC values
+  #heatmap_data <- heatmap_data[order(row_means), ]
+  
+  # Define breaks for heatmap color scaling based on the max absolute value in the data
+  max_abs_value <- max(abs(heatmap_data), na.rm = TRUE)
+  breaks <- seq(-max_abs_value, max_abs_value, length.out = 101)
+  
+  # Plot the heatmap with the specified settings and store in the list
+  heatmap_plot <- pheatmap(
+    heatmap_data, 
+    cluster_rows = FALSE,    # Do not cluster rows
+    cluster_cols = FALSE,    # Do not cluster columns
+    color = color_palette, 
+    breaks = breaks,         # Define breaks for color scaling
+    number_color = "black",  # Color of numbers displayed in cells
+    fontsize_number = 12,    # Font size for numbers
+    display_numbers = TRUE,  # Display numbers in the heatmap cells
+    main = paste("Heatmap of Effect Sizes for", variable, "\nContrast:", 
+                contrast[2], "vs", contrast[3]), # Main title with contrast info
+    na_col = "white"         # Color for NA values
+  )
+  
+  # Store the heatmap data in the list with the variable name
+  heatmap_data_des_list2[[variable]] <- heatmap_data
+  
+  # Optional: Print information about the current analysis
+  cat("\nAnalysis for variable:", variable, "\n")
+  cat("Contrast used:", paste(contrast[2], "vs", contrast[3]), "\n")
+  cat("Number of significant species:", nrow(heatmap_data), "\n\n")
+}
+
+# Filter extreme log2 fold change values
+heatmap_data_des_list3 <- lapply(heatmap_data_des_list2, function(df) {
+  # Check if the element is a non-empty data frame
+  if (is.data.frame(df) && nrow(df) > 0) {
+    # Apply the operation only to numeric columns
+    numeric_cols <- sapply(df, is.numeric)
+    df[numeric_cols][df[numeric_cols] > 20 | df[numeric_cols] <= -20] <- NA
+  }
+  return(df)
+})
+
+# Create heatmaps with the filtered data
+for (variable in variables) {
+  heatmap_data <- heatmap_data_des_list3[[variable]]
+  
+  # Skip if no data
+  if (!is.data.frame(heatmap_data) || nrow(heatmap_data) == 0) {
+    cat("No data for", variable, "after filtering\n")
+    next
+  }
+  
+  # Define breaks for heatmap color scaling based on the max absolute value in the data
+  max_abs_value <- max(abs(heatmap_data), na.rm = TRUE)
+  if (!is.finite(max_abs_value)) max_abs_value <- 20  # Fallback if all values are NA
+  breaks <- seq(-max_abs_value, max_abs_value, length.out = 101)
+  
+  # Get the corresponding contrast
+  contrast <- contrasts[[variable]]
+  
+  # Plot the heatmap with the filtered data
+  heatmap_plot_filtered <- pheatmap(
+    heatmap_data, 
+    cluster_rows = FALSE,
+    cluster_cols = FALSE,
+    color = color_palette, 
+    breaks = breaks,
+    number_color = "black",
+    fontsize_number = 12,
+    display_numbers = TRUE,
+    main = paste("Filtered Heatmap for", variable, "\nContrast:", 
+                contrast[2], "vs", contrast[3], "\n(|log2FC| ≤ 20)"),
+    na_col = "white"
+  )
+}
+
+# Return the filtered list
+heatmap_data_des_list3
+```
+
+```{r}
+ps_melted <- psmelt(ps_obj)
+ps_melted
+```
+#barplot logFC
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(dplyr)
+library(forcats)
+library(tidyr)
+
+# Define contrasts for reference
+contrasts <- list(
+  "Stage_of_severity_of_periodontitis" = c("Stage_of_severity_of_periodontitis", "severe", "mild"),
+  "Treatment_of_periodontitis" = c("Treatment_of_periodontitis", "yes", "no")
+)
+
+# Create improved bar plots for each filtered dataset
+for (variable in names(heatmap_data_des_list3)) {
+  # Get the data for this variable
+  df <- heatmap_data_des_list3[[variable]]
+  
+  # Skip if no data
+  if (!is.data.frame(df) || nrow(df) == 0) {
+    cat("No data for", variable, "after filtering\n")
+    next
+  }
+  
+  # Get the corresponding contrast
+  contrast <- contrasts[[variable]]
+  pos_group <- contrast[2]  # e.g., "severe" or "y"
+  neg_group <- contrast[3]  # e.g., "mild" or "n"
+  
+  # Prepare data for plotting
+  plot_data <- data.frame(
+    Species = rownames(df),
+    LogFC = rowMeans(df, na.rm = TRUE),  # Use mean if multiple columns
+    stringsAsFactors = FALSE
+  )
+  
+  # Remove rows with NA values after taking row means
+  plot_data <- plot_data[!is.na(plot_data$LogFC), ]
+  
+  # Skip if no data after removing NAs
+  if (nrow(plot_data) == 0) {
+    cat("No non-NA data for", variable, "\n")
+    next
+  }
+  
+  # Add group information based on log fold change direction
+  plot_data <- plot_data %>%
+    mutate(Group = ifelse(LogFC > 0, pos_group, neg_group)) %>%
+    # Order by log fold change
+    arrange(LogFC)
+  
+  # Create a clean file name
+  clean_filename <- gsub("[^a-zA-Z0-9]", "_", variable)
+  
+  # Define colors based on the contrast
+  if (variable == "Stage_of_severity_of_periodontitis") {
+    color_values <- c("severe" = "#d7191c", "mild" = "#2c7bb6")
+  } else if (variable == "Treatment_of_periodontitis") {
+    color_values <- c("yes" = "#CF4878", "no" = "#4878CF")
+  } else {
+    color_values <- c("#d7191c", "#2c7bb6")
+    names(color_values) <- c(pos_group, neg_group)
+  }
+  
+  # Limit to a reasonable number of species for better visualization
+  # Sort by absolute log fold change to show the most significant changes
+  plot_data <- plot_data %>%
+    mutate(abs_lfc = abs(LogFC)) %>%
+    arrange(desc(abs_lfc))
+  
+  # Take top 20 most significant changes
+  if (nrow(plot_data) > 20) {
+    plot_data <- plot_data[1:20, ]
+    title_suffix <- "\n(Top 20 most significant changes)"
+  } else {
+    title_suffix <- ""
+  }
+  
+  # Re-sort by actual LogFC for the plot
+  plot_data <- plot_data %>% arrange(LogFC)
+  
+  # Generate the bar plot
+  p <- ggplot(plot_data, aes(x = reorder(Species, LogFC), y = LogFC, fill = Group)) +
+    geom_bar(stat = "identity", width = 0.7) +
+    scale_fill_manual(values = color_values) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+    coord_flip() +  # Horizontal bars for better species name display
+    theme_minimal() +
+    theme(
+      axis.text.y = element_text(face = "italic", size = 10,colour='black'),
+       axis.text.x = element_text(face = "italic", size = 10,colour='black'),
+      axis.title = element_text(size = 12, face = "bold"),
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      legend.title = element_text(size = 12),
+      legend.text = element_text(size = 10),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.y = element_blank()
+    ) +
+    labs(
+      title = paste0( variable, "\n", pos_group, " vs ", neg_group),
+      x = "",
+      y = "Log2 Fold Change",
+      fill = "Group"
+    )
+  
+  # Save the plot
+  pdf_file <- paste0("BarPlot_LogFC_", clean_filename, ".pdf")
+  ggsave(filename = pdf_file, plot = p, width = 12, height = min(15, max(8, nrow(plot_data)/2)), 
+         limitsize = FALSE)
+  
+  # Also save a PNG version for easier viewing
+  png_file <- paste0("BarPlot_LogFC_", clean_filename, ".png")
+  ggsave(filename = png_file, plot = p, width = 12, height = min(15, max(8, nrow(plot_data)/2)), 
+         dpi = 300, limitsize = FALSE)
+  
+  # Print confirmation
+  cat("Saved bar plot for", variable, "to", pdf_file, "and", png_file, "\n")
+  
+  # Display the plot
+  print(p)
+}
+```
+
+
+```{r, fig.width=25, fig.height=5}
+# Load necessary libraries
+library(ggplot2)
+library(dplyr)
+library(forcats)
+library(tidyr)
+library(stringr)
+library(phyloseq)
+library(patchwork)
+
+# Make sure we're using dplyr's summarize, not plyr's
+if("package:plyr" %in% search()) {
+  detach("package:plyr", unload=TRUE)
+  cat("Detached plyr package to avoid conflicts\n")
+}
+
+# Define contrasts for reference
+contrasts <- list(
+  "Stage_of_severity_of_periodontitis" = c("Stage_of_severity_of_periodontitis", "severe", "mild"),
+  "Treatment_of_periodontitis" = c("Treatment_of_periodontitis", "yes", "no")
+)
+
+# Define colors for each variable
+color_schemes <- list(
+  "Stage_of_severity_of_periodontitis" = c("severe" = "#d7191c", "mild" = "#2c7bb6"),
+  "Treatment_of_periodontitis" = c("yes" = "#CF4878", "no" = "#4878CF")
+)
+
+# Function to process phyloseq data with correct species name formatting
+process_phyloseq_data <- function(ps_obj, species_list, variable) {
+  cat("Processing phyloseq data for", length(species_list), "species...\n")
+  
+  # Melt the phyloseq object
+  ps_melted <- psmelt(ps_obj)
+  
+  # Clean species names - extract part after s__ and KEEP underscores
+  ps_melted$CleanSpecies <- sapply(ps_melted$OTU, function(x) {
+    if(grepl("s__", x)) {
+      species_part <- str_extract(x, "s__[^|]*$")
+      cleaned_name <- gsub("s__", "", species_part)
+      # Keep underscores in the name
+      return(cleaned_name)
+    } else {
+      # If no s__ pattern, extract last part after final |
+      last_part <- gsub(".*\\|", "", x)
+      return(last_part)
+    }
+  })
+  
+  cat("First few species in phyloseq after cleaning:\n")
+  print(head(unique(ps_melted$CleanSpecies)))
+  
+  # Find matching species
+  match_counts <- sapply(species_list, function(sp) {
+    sum(ps_melted$CleanSpecies == sp)
+  })
+  
+  matched_species <- species_list[match_counts > 0]
+  cat("Found", length(matched_species), "matching species out of", length(species_list), "\n")
+  
+  if(length(matched_species) == 0) {
+    cat("No matching species found. Trying alternative matching approach...\n")
+    
+    # Try finding with partial matches
+    partial_matches <- sapply(species_list, function(sp) {
+      pattern <- gsub("_", "[_ ]", sp)  # Allow space or underscore
+      matches <- grepl(pattern, ps_melted$CleanSpecies, ignore.case = TRUE)
+      if(sum(matches) > 0) {
+        unique_matches <- unique(ps_melted$CleanSpecies[matches])
+        return(unique_matches[1])  # Return first match
+      } else {
+        return(NA)
+      }
+    })
+    
+    # Create a mapping from original to matched names
+    valid_matches <- !is.na(partial_matches)
+    if(sum(valid_matches) > 0) {
+      species_mapping <- data.frame(
+        original = species_list[valid_matches],
+        matched = partial_matches[valid_matches],
+        stringsAsFactors = FALSE
+      )
+      
+      cat("Found", nrow(species_mapping), "partial matches\n")
+      print(head(species_mapping))
+      
+      # Replace with matched species names
+      ps_melted$MatchedSpecies <- ps_melted$CleanSpecies
+      for(i in 1:nrow(species_mapping)) {
+        ps_melted$MatchedSpecies[ps_melted$CleanSpecies == species_mapping$matched[i]] <- species_mapping$original[i]
+      }
+      
+      # Filter data
+      ps_subset <- ps_melted %>%
+        filter(MatchedSpecies %in% species_list)
+    } else {
+      cat("Still no matches found. Using direct OTU mapping...\n")
+      
+      # Map directly from OTU patterns
+      otu_patterns <- list()
+      for(sp in species_list) {
+        pattern <- gsub("_", "_", sp)  # Exact pattern
+        matches <- grep(pattern, ps_melted$OTU, value = TRUE)
+        if(length(matches) > 0) {
+          otu_patterns[[sp]] <- matches
+        }
+      }
+      
+      if(length(otu_patterns) > 0) {
+        cat("Found", length(otu_patterns), "OTU patterns\n")
+        
+        # Create a new column for matched species
+        ps_melted$MatchedSpecies <- NA
+        for(sp in names(otu_patterns)) {
+          for(otu_pattern in otu_patterns[[sp]]) {
+            ps_melted$MatchedSpecies[ps_melted$OTU == otu_pattern] <- sp
+          }
+        }
+        
+        # Filter data
+        ps_subset <- ps_melted %>%
+          filter(!is.na(MatchedSpecies))
+      } else {
+        cat("No matches found at all. Cannot proceed with abundance/prevalence analysis.\n")
+        return(NULL)
+      }
+    }
+  } else {
+    # Filter data for matched species
+    ps_subset <- ps_melted %>%
+      filter(CleanSpecies %in% matched_species)
+    
+    # Add matched species column
+    ps_subset$MatchedSpecies <- ps_subset$CleanSpecies
+  }
+  
+  # Calculate relative abundance per sample
+  ps_subset <- ps_subset %>%
+    group_by(Sample) %>%
+    mutate(RelativeAbundance = Abundance / sum(Abundance) * 100) %>%
+    ungroup()
+  
+  # Add a small constant and calculate log10 abundance for log scale plots
+  ps_subset$LogAbundance <- log10(ps_subset$RelativeAbundance + 1e-5)
+  
+  # Create a separate dataset with only non-zero abundance values for boxplots
+  ps_subset_nonzero <- ps_subset %>%
+    filter(Abundance > 0)
+  
+  # Recalculate log abundance for non-zero values (no need for pseudo-count)
+  ps_subset_nonzero$LogAbundance <- log10(ps_subset_nonzero$RelativeAbundance)
+  
+  # Get the variable as factor
+  ps_subset[[variable]] <- as.factor(ps_subset[[variable]])
+  ps_subset_nonzero[[variable]] <- as.factor(ps_subset_nonzero[[variable]])
+  
+  return(list(
+    all_data = ps_subset,
+    nonzero_data = ps_subset_nonzero
+  ))
+}
+
+# Process each variable
+for(variable in names(heatmap_data_des_list3)) {
+  cat("\n=============================\n")
+  cat("Processing", variable, "\n")
+  cat("=============================\n")
+  
+  # Get the data for this variable
+  df <- heatmap_data_des_list3[[variable]]
+  
+  # Skip if no data
+  if(!is.data.frame(df) || nrow(df) == 0) {
+    cat("No data for", variable, "after filtering\n")
+    next
+  }
+  
+  # Get the corresponding contrast
+  contrast <- contrasts[[variable]]
+  pos_group <- contrast[2]
+  neg_group <- contrast[3]
+  
+  # Create a clean file name
+  clean_filename <- gsub("[^a-zA-Z0-9]", "_", variable)
+  
+  # Define colors based on the contrast
+  if(variable %in% names(color_schemes)) {
+    color_values <- color_schemes[[variable]]
+  } else {
+    color_values <- c("#d7191c", "#2c7bb6")
+    names(color_values) <- c(pos_group, neg_group)
+  }
+  
+  # Prepare data for plotting
+  plot_data <- data.frame(
+    Species = rownames(df),
+    LogFC = rowMeans(df, na.rm = TRUE),
+    stringsAsFactors = FALSE
+  )
+  
+  # Keep original species names (with underscores)
+  plot_data <- plot_data[!is.na(plot_data$LogFC), ]
+  
+  # Add group information based on log fold change
+  plot_data <- plot_data %>%
+    mutate(Group = ifelse(LogFC > 0, pos_group, neg_group)) %>%
+    mutate(abs_lfc = abs(LogFC)) %>%
+    arrange(desc(abs_lfc))
+  
+  # Take top species
+  if(nrow(plot_data) > 20) {
+    plot_data <- plot_data[1:20, ]
+    title_suffix <- "\n(Top 20 species)"
+  } else {
+    title_suffix <- ""
+  }
+  
+  # Re-sort for display
+  plot_data <- plot_data %>% arrange(LogFC)
+  
+  # Process phyloseq data for these species
+  cat("Getting abundance and prevalence data...\n")
+  ps_processed_list <- process_phyloseq_data(ps_pruned_count, plot_data$Species, variable)
+  
+  if(is.null(ps_processed_list)) {
+    cat("Could not process phyloseq data. Only creating log fold change plot.\n")
+    
+    # Create log fold change plot
+    p1 <- ggplot(plot_data, aes(x = reorder(Species, LogFC), y = LogFC, fill = Group)) +
+      geom_bar(stat = "identity", width = 0.7) +
+      scale_fill_manual(values = color_values) +
+      geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+      coord_flip() +
+      theme_minimal() +
+      theme(
+        axis.text.y = element_text(face = "italic", size = 10, colour = "black"),
+        axis.text.x = element_text(size = 10, colour = "black"),
+        axis.title = element_text(size = 12, face = "bold"),
+        plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+        legend.position = "top"
+      ) +
+      labs(
+        title = paste0("Log Fold Change\n", pos_group, " vs ", neg_group),
+        x = "",
+        y = "Log2 Fold Change",
+        fill = "Group"
+      )
+    
+    # Save and display the plot
+    ggsave(paste0("LogFC_Plot_", clean_filename, ".pdf"), p1, width = 10, height = 8)
+    print(p1)
+    next
+  }
+  
+  # Extract the datasets
+  ps_processed <- ps_processed_list$all_data
+  ps_nonzero <- ps_processed_list$nonzero_data
+  
+  # Calculate statistics for matched species - FIXED the n() error
+  # Statistics for all data (including zeros) - for prevalence
+  species_stats <- ps_processed %>%
+    group_by(MatchedSpecies, !!sym(variable)) %>%
+    dplyr::summarize(
+      Mean = mean(RelativeAbundance, na.rm = TRUE),
+      Median = median(RelativeAbundance, na.rm = TRUE),
+      Prevalence = mean(Abundance > 0) * 100,
+      SampleCount = dplyr::n(),  # Explicitly use dplyr::n()
+      .groups = "drop"
+    )
+  
+  # Statistics for non-zero data - for abundance plots
+  species_stats_nonzero <- ps_nonzero %>%
+    group_by(MatchedSpecies, !!sym(variable)) %>%
+    dplyr::summarize(
+      NonZeroMean = mean(RelativeAbundance, na.rm = TRUE),
+      NonZeroMedian = median(RelativeAbundance, na.rm = TRUE),
+      LogMean = mean(LogAbundance, na.rm = TRUE),
+      LogMedian = median(LogAbundance, na.rm = TRUE),
+      NonZeroCount = dplyr::n(),
+      .groups = "drop"
+    )
+  
+  # Merge the statistics
+  combined_stats <- species_stats %>%
+    left_join(species_stats_nonzero, by = c("MatchedSpecies", variable))
+  
+  # Create summary table
+  stats_summary <- combined_stats %>%
+    pivot_wider(
+      id_cols = MatchedSpecies,
+      names_from = !!sym(variable),
+      values_from = c(Mean, Median, NonZeroMean, NonZeroMedian, LogMean, LogMedian, Prevalence, SampleCount, NonZeroCount)
+    )
+  
+  # Save stats
+  write.csv(stats_summary, paste0("Species_Stats_NonZero_", clean_filename, ".csv"), row.names = FALSE)
+  
+  # For consistent species ordering across plots
+  species_order <- plot_data$Species[order(plot_data$LogFC)]
+  
+  # 1. Log Fold Change Plot
+  p1 <- ggplot(plot_data, aes(x = reorder(Species, LogFC), y = LogFC, fill = Group)) +
+    geom_bar(stat = "identity", width = 0.7) +
+    scale_fill_manual(values = color_values) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+    coord_flip() +
+    theme_minimal() +
+    theme(
+      axis.text.y = element_text(face = "italic", size = 10, colour = "black"),
+      axis.text.x = element_text(size = 10, colour = "black"),
+      axis.title = element_text(size = 12, face = "bold"),
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      legend.position = "top"
+    ) +
+    labs(
+      title = paste0("Log Fold Change\n", pos_group, " vs ", neg_group),
+      x = "",
+      y = "Log2 Fold Change",
+      fill = "Group"
+    )
+  
+  # 2. Log Abundance Boxplot (non-zero values only)
+  # Ensure MatchedSpecies is a factor with correct ordering
+  ps_nonzero$MatchedSpecies <- factor(ps_nonzero$MatchedSpecies, levels = species_order)
+  
+  p2 <- ggplot(ps_nonzero, aes(x = MatchedSpecies, y = LogAbundance, fill = !!sym(variable))) +
+    geom_boxplot(outlier.size = 1) +
+    scale_fill_manual(values = color_values) +
+    coord_flip() +
+    theme_minimal() +
+    theme(
+      axis.text.y = element_text(face = "italic", size = 10, colour = "black"),
+      axis.text.x = element_text(size = 10, colour = "black"),
+      axis.title = element_text(size = 12, face = "bold"),
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      legend.position = "top"
+    ) +
+    labs(
+      title = "Log10 Abundance\n(Zeros Excluded)",
+      x = "",
+      y = "Log10 Relative Abundance",
+      fill = "Group"
+    )
+  
+  # 3. Prevalence Bar Plot
+  prevalence_data <- species_stats %>%
+    mutate(Species = factor(MatchedSpecies, levels = species_order))
+  
+  # Create a two-sided prevalence plot
+  prevalence_data_wide <- prevalence_data %>%
+    mutate(
+      Direction = ifelse(!!sym(variable) == pos_group, "positive", "negative"),
+      PlotValue = ifelse(Direction == "negative", -Prevalence, Prevalence)
+    )
+  
+  p3 <- ggplot(prevalence_data_wide, aes(x = Species, y = PlotValue, fill = !!sym(variable))) +
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = color_values) +
+    scale_y_continuous(
+      labels = function(x) abs(x),
+      limits = c(-100, 100)
+    ) +
+    coord_flip() +
+    theme_minimal() +
+    theme(
+      axis.text.y = element_text(face = "italic", size = 10, colour = "black"),
+      axis.text.x = element_text(size = 10, colour = "black"),
+      axis.title = element_text(size = 12, face = "bold"),
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      legend.position = "top"
+    ) +
+    labs(
+      title = "Prevalence",
+      x = "",
+      y = "Prevalence (%)",
+      fill = "Group"
+    )
+  
+  # Combine all three plots
+  combined_plot <- p1 + p2 + p3 +
+    plot_layout(ncol = 3) +
+    plot_annotation(
+      title = paste0("Microbiome Analysis: ", variable),
+      tag_levels = 'A',
+      theme = theme(
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5, colour = "black")
+      )
+    )
+  
+  # Save and display
+  ggsave(paste0("Combined_Microbiome_Plot_NonZero_", clean_filename, ".pdf"), 
+         combined_plot, width = 18, height = 10)
+  
+  cat("Saved combined plot to", paste0("Combined_Microbiome_Plot_NonZero_", clean_filename, ".pdf"), "\n")
+  print(combined_plot)
+}
+```

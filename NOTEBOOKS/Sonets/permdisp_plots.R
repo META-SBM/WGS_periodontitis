@@ -2,16 +2,16 @@ library(vegan)
 library(phyloseq)
 
 # Reqd phyloseq
-ps <-  readRDS('/home/ignatsonets/ps_wgs.rds')
+ps <-  readRDS('/home/ignatsonets/ps_mags_filt.rds')
+#ps <-  readRDS('/home/ignatsonets/ps_humann_joint.rds')
+#ps <-  readRDS('/home/ignatsonets/ps_wgs.rds')
 ps <- prune_samples(sample_sums(ps) > 0, ps)
 otu_table <- as.data.frame(otu_table(ps))  # Samples as rows
 metadata <- as.data.frame(sample_data(ps))
 
-cols_to_keep <- c('Age_group', 'BMI_group', 'Sex', 'Arterial_hypertension',
-                  'Cardiovascular_diseases', 'Rheumatoid_arthritis', 'Diabetes_mellitus',
-                  'IBD', 'Antibiotics_treatment_in_last_6_months', 'Smoking_status',
-                  'Treatment_of_periodontitis', 'Patient_category','Stage_of_severity_of_periodontitis')
-
+cols_to_keep <- c('Age_group','BMI_group','Sex','Cardiovascular_diseases','Rheumatoid_arthritis',
+                  'Antibiotics_treatment_in_last_6_months','Smoking_status',
+                  'Stage_of_severity_of_periodontitis','Treatment_of_periodontitis')
 for (var in cols_to_keep) {
   if (!var %in% colnames(metadata)) next
   non_na <- !is.na(metadata[[var]])
@@ -28,9 +28,11 @@ for (var in cols_to_keep) {
   dist_matrix <- vegdist(otu_sub, method = "bray")
   dispersion <- betadisper(dist_matrix, group = group)
   perm_test <- permutest(dispersion, permutations = 999)
-  
+  cat("\nPERMDISP (method='bray') results for", var, ":\n")
+  print(perm_test)
+
   # Plot with adjusted margins and labels
-  png(paste0("PERMDISP_", var, ".png"), width = 1200, height = 600)
+  png(paste0("/home/ignatsonets/PERMDISP_mags_", var, ".png"), width = 1200, height = 600)
   par(mfrow = c(1, 2), mar = c(8, 5, 4, 2))  # Larger bottom margin (8)
   
   # Boxplot: Rotated (90°) and smaller group labels

@@ -2,18 +2,18 @@ from PIL import Image
 import os
 
 # Configuration - using your exact settings
-WORKING_DIR = '/home/ignatsonets/'
+WORKING_DIR = '/home/ignatsonets/AB_plots_v7_big_font_newgrid/'
 FILE_LIST = [
-    "Age_group_v2_combined_plot.png",
-    "Stage_of_severity_of_periodontitis_v2_WGS_combined_plot.png",
-    "Rheumatoid_arthritis_v2_combined_plot.png",
-    "Treatment_of_periodontitis_v2_combined_plot.png",
-    "BMI_group_v2_combined_plot.png",
-    "Arterial_hypertension_v2_combined_plot.png"
+    "Age_group_v7_MAGs_combined_plot_big_font_newgrid.png",
+ "Stage_of_severity_of_periodontitis_v7_MAGs_combined_plot_big_font_newgrid.png",
+    "Rheumatoid_arthritis_v7_MAGs_combined_plot_big_font_newgrid.png",
+    "Treatment_of_periodontitis_v7_MAGs_combined_plot_big_font_newgrid.png",
+    "BMI_group_v7_MAGs_combined_plot_big_font_newgrid.png",
+    "Arterial_hypertension_v7_MAGs_combined_plot_big_font_newgrid.png"
 ]
 GRID_COLS = 3
 GRID_ROWS = 2
-OUTPUT_FILE = "combined_plots.png"
+OUTPUT_FILE = "MAGs_v7_suppl_combined_plots_big_font_newgrid_v3.png"
 
 def main():
     # Change to working directory

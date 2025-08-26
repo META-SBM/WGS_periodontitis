@@ -1,4 +1,4 @@
-#function
+# function
 ```{r}
 # Complete code for PERMANOVA analysis with properly matched colors
 
@@ -745,18 +745,71 @@ run_dual_permanova_plots <- function(ps_list, names_list, formula,
 
 
 ```
+#toy example
+```{r, fig.width=30, fig.height=7}
+# Example usage with fixed colors:
+# ================================
 
-#usage
-```{r, fig.width=26, fig.height=8}
+# Function to create a toy phyloseq object (for testing)
+create_toy_phyloseq <- function(n_samples = 30, n_taxa = 50, name = "ToyData") {
+ # Create random OTU table
+ set.seed(123)
+ otu_matrix <- matrix(
+   rpois(n_taxa * n_samples, lambda = 100),
+   nrow = n_taxa,
+   ncol = n_samples
+ )
+ 
+ # Add row and column names
+ rownames(otu_matrix) <- paste0("OTU_", 1:n_taxa)
+ colnames(otu_matrix) <- paste0("Sample_", 1:n_samples)
+ 
+ # Create sample metadata
+ sample_data <- data.frame(
+   Sample_ID = paste0("Sample_", 1:n_samples),
+   Age_Group_2 = factor(rep(c("Young", "Old"), each = n_samples/2)),
+   Treatment = factor(rep(c("Control", "Treatment"), n_samples/2)),
+   Sex = factor(sample(c("Male", "Female"), n_samples, replace = TRUE)),
+   BMI = rnorm(n_samples, 25, 3),
+   row.names = paste0("Sample_", 1:n_samples)
+ )
+ 
+ # Create taxonomy table
+ tax_matrix <- matrix(
+   paste0("Tax_", 1:n_taxa, "_", sample(letters, n_taxa, replace = TRUE)),
+   nrow = n_taxa,
+   ncol = 1
+ )
+ rownames(tax_matrix) <- paste0("OTU_", 1:n_taxa)
+ colnames(tax_matrix) <- "Species"
+ 
+ # Create phyloseq object
+ ps <- phyloseq(
+   otu_table(otu_matrix, taxa_are_rows = TRUE),
+   sample_data(sample_data),
+   tax_table(tax_matrix)
+ )
+ 
+ return(ps)
+}
+
+# Example usage:
+# ==============
+
+# Create three toy phyloseq objects representing different datasets
+ps_species <- create_toy_phyloseq(n_samples = 30, n_taxa = 50, name = "Species")
+ps_pathways <- create_toy_phyloseq(n_samples = 30, n_taxa = 40, name = "Pathways")
+ps_mags <- create_toy_phyloseq(n_samples = 30, n_taxa = 35, name = "MAGs")
+
 # Create list of phyloseq objects and their names
-ps_list <- list(ps, hm_phyloseq_joint,mags_ps_filtered)
+ps_list <- list(ps_species, ps_pathways, ps_mags)
 names_list <- c("Species", "Pathways", "MAGs")
-formula1='Age_group+BMI_group+Sex+Cardiovascular_diseases+Rheumatoid_arthritis+Antibiotics_treatment_in_last_6_months+Smoking_status+Stage_of_severity_of_periodontitis+Treatment_of_periodontitis'
+
 # Run the function with your specific color palette
 dual_results <- run_dual_permanova_plots(
  ps_list = ps_list,
  names_list = names_list,
- formula = formula1,
+ formula = "Age_Group_2 + Treatment + Sex",
  title_prefix = "Impact on Microbial Community",
  color_palette = c("#009E73", "#E69F00", "#56B4E9"),  # Green, Orange, Blue
  handle_nas = TRUE
@@ -775,5 +828,41 @@ print(dual_results$euclidean_combined_plot) # Bar + Donut for Euclidean
 print(dual_results$bray_plot)      # Bar chart for Bray-Curtis
 print(dual_results$euclidean_plot) # Bar chart for Euclidean
 ```
+#usage
+```{r}
+# Create list of phyloseq objects and their names
+ps <- readRDS('/home/ignatsonets/ps_wgs.rds')
+hm_phyloseq_joint <- readRDS('/home/ignatsonets/ps_humann_joint.rds')
+mags_ps_filtered <- readRDS('/home/ignatsonets/ps_mags_filt.rds')
+ps_list <- list(ps, hm_phyloseq_joint,mags_ps_filtered)
+names_list <- c("Species", "Pathways", "MAGs")
+formula1='Age_group+BMI_group+Sex+Cardiovascular_diseases+Rheumatoid_arthritis+Arterial_hypertension+BMI_group+Patient_category+Diabetes_mellitus+IBD+Antibiotics_treatment_in_last_6_months+Smoking_status+
+Stage_of_severity_of_periodontitis+Treatment_of_periodontitis'
+# Run the function with your specific color palette
+dual_results <- run_dual_permanova_plots(
+ ps_list = ps_list,
+ names_list = names_list,
+ formula = formula1,
+ title_prefix = "Impact on Microbial Community",
+ color_palette = c("#009E73", "#E69F00", "#56B4E9"),  # Green, Orange, Blue
+ handle_nas = TRUE
+)
 
+# Display different plot combinations:
+
+# Option 1: Show only donut plots side by side
+print(dual_results$combined_donut_plot)
+
+# Option 2: Show bar charts + donut plots for each method separately
+bray_plot <- dual_results$bray_combined_plot
+ggsave('/home/ignatsonets/permanova_bray_upd.png', dpi=300, width=25, height=15, bray_plot)# Bar + Donut for Bray-Curtis
+clr_plot <- dual_results$euclidean_combined_plot
+ggsave('/home/ignatsonets/permanova_clr_upd.png', dpi=300, width=25, height=15, clr_plot)# Bar + Donut for Euclidean
+print(dual_results$bray_combined_plot)      # Bar chart for Bray-Curtis
+print(dual_results$euclidean_combined_plot)
+
+# Option 3: Show only bar charts
+print(dual_results$bray_plot)      # Bar chart for Bray-Curtis
+print(dual_results$euclidean_plot) # Bar chart for Euclidean
+```
 

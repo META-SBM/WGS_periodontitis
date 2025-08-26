@@ -1,4 +1,4 @@
-# DESeq2 code and plot
+DESeq2 code and plot
 #libs
 ```{r}
 library(ggplot2)
@@ -19,14 +19,15 @@ library(grid)
 
 #load WGS phyloseq and transform
 ```{r}
-#ps_s_mean <-  readRDS('/home/ignatsonets/ps_deseq.rds')
+ps_s_mean <-  readRDS('/home/ignatsonets/ps_deseq.rds')
 ps_s_mean <- microbiome::transform(ps_s_mean,transform = 'compositional')
 taxa <- as.data.frame(as.matrix(ps_s_mean@tax_table))
 taxa$SGB <- NULL
 tax_table(ps_s_mean)<- as.matrix(taxa)
-#ps_s_counts_mean <-  readRDS('/home/ignatsonets/ps_deseq.rds')
+ps_s_counts_mean <-  readRDS('/home/ignatsonets/ps_deseq.rds')
 tax_table(ps_s_counts_mean)<- as.matrix(taxa)
 ```
+
 # MAGs phyloseq
 ```{r}
 ps_s_counts_mean <-  readRDS('/home/ignatsonets/ps_mags_filt.rds')
@@ -234,12 +235,13 @@ ps_obj <- ps_pruned_count
 #ps_obj@otu_table <- ps_obj@otu_table + 1  # Commented out as in your code
 
 # Define the variables to loop over
-variables <- c("Stage_of_severity_of_periodontitis", 'Treatment_of_periodontitis')
+variables <- c("Stage_of_severity_of_periodontitis", 'Treatment_of_periodontitis', 'Antibiotics_treatment_in_last_6_months')
 
 # Define contrasts for each variable
 contrasts <- list(
   "Stage_of_severity_of_periodontitis" = c("Stage_of_severity_of_periodontitis", "severe", "mild"),
-  "Treatment_of_periodontitis" = c("Treatment_of_periodontitis", "yes", "no")
+  "Treatment_of_periodontitis" = c("Treatment_of_periodontitis", "yes", "no"),
+  'Antibiotics_treatment_in_last_6_months' = c('Antibiotics_treatment_in_last_6_months', 'yes', 'no')
 )
 
 # Initialize a list to store heatmap data tables for each variable
@@ -367,7 +369,8 @@ library(tidyr)
 # Define contrasts for reference
 contrasts <- list(
   "Stage_of_severity_of_periodontitis" = c("Stage_of_severity_of_periodontitis", "severe", "mild"),
-  "Treatment_of_periodontitis" = c("Treatment_of_periodontitis", "yes", "no")
+  "Treatment_of_periodontitis" = c("Treatment_of_periodontitis", "yes", "no"),
+  'Antibiotics_treatment_in_last_6_months' = c('Antibiotics_treatment_in_last_6_months', 'yes', 'no')
 )
 
 # Create improved bar plots for each filtered dataset
@@ -416,6 +419,8 @@ for (variable in names(heatmap_data_des_list3)) {
     color_values <- c("severe" = "#d7191c", "mild" = "#2c7bb6")
   } else if (variable == "Treatment_of_periodontitis") {
     color_values <- c("yes" = "#CF4878", "no" = "#4878CF")
+  } else if (variable == "Antibiotics_treatment_in_last_6_months") {
+    color_values <- c("yes" = "#C64742", "no" = "#01016f")
   } else {
     color_values <- c("#d7191c", "#2c7bb6")
     names(color_values) <- c(pos_group, neg_group)
@@ -480,7 +485,7 @@ for (variable in names(heatmap_data_des_list3)) {
 }
 ```
 
-
+# final plot w/log10 and abundance
 ```{r, fig.width=25, fig.height=5}
 # Load necessary libraries
 library(ggplot2)
@@ -500,15 +505,16 @@ if("package:plyr" %in% search()) {
 # Define contrasts for reference
 contrasts <- list(
   "Stage_of_severity_of_periodontitis" = c("Stage_of_severity_of_periodontitis", "severe", "mild"),
-  "Treatment_of_periodontitis" = c("Treatment_of_periodontitis", "yes", "no")
+  "Treatment_of_periodontitis" = c("Treatment_of_periodontitis", "yes", "no"),
+  'Antibiotics_treatment_in_last_6_months' = c('Antibiotics_treatment_in_last_6_months', 'yes', 'no')
 )
 
 # Define colors for each variable
 color_schemes <- list(
   "Stage_of_severity_of_periodontitis" = c("severe" = "#d7191c", "mild" = "#2c7bb6"),
-  "Treatment_of_periodontitis" = c("yes" = "#CF4878", "no" = "#4878CF")
+  "Treatment_of_periodontitis" = c("yes" = "#CF4878", "no" = "#4878CF"),
+  "Antibiotics_treatment_in_last_6_months"= c("yes" = "#C64742", "no" = "#01016f")
 )
-
 # Function to process phyloseq data with correct species name formatting
 process_phyloseq_data <- function(ps_obj, species_list, variable) {
   cat("Processing phyloseq data for", length(species_list), "species...\n")
@@ -717,11 +723,12 @@ for(variable in names(heatmap_data_des_list3)) {
       coord_flip() +
       theme_minimal() +
       theme(
-        axis.text.y = element_text(face = "italic", size = 10, colour = "black"),
-        axis.text.x = element_text(size = 10, colour = "black"),
-        axis.title = element_text(size = 12, face = "bold"),
-        plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-        legend.position = "top"
+        axis.text.y = element_text(face = "italic", size = 16, colour = "black"),
+        axis.text.x = element_text(size = 16, colour = "black"),
+        axis.title = element_text(size = 16, face = "bold"),
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+        legend.position = "top",
+        legend.text=element_text(size=10)
       ) +
       labs(
         title = paste0("Log Fold Change\n", pos_group, " vs ", neg_group),
@@ -790,11 +797,12 @@ for(variable in names(heatmap_data_des_list3)) {
     coord_flip() +
     theme_minimal() +
     theme(
-      axis.text.y = element_text(face = "italic", size = 10, colour = "black"),
-      axis.text.x = element_text(size = 10, colour = "black"),
-      axis.title = element_text(size = 12, face = "bold"),
-      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-      legend.position = "top"
+      axis.text.y = element_text(face = "italic", size = 16, colour = "black"),
+      axis.text.x = element_text(size = 16, colour = "black"),
+      axis.title = element_text(size = 16, face = "bold"),
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      legend.position = "top",
+      legend.text = element_text(size=10)
     ) +
     labs(
       title = paste0("Log Fold Change\n", pos_group, " vs ", neg_group),
@@ -813,11 +821,12 @@ for(variable in names(heatmap_data_des_list3)) {
     coord_flip() +
     theme_minimal() +
     theme(
-      axis.text.y = element_text(face = "italic", size = 10, colour = "black"),
-      axis.text.x = element_text(size = 10, colour = "black"),
-      axis.title = element_text(size = 12, face = "bold"),
-      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-      legend.position = "top"
+      axis.text.y = element_text(face = "italic", size = 16, colour = "black"),
+      axis.text.x = element_text(size = 16, colour = "black"),
+      axis.title = element_text(size = 16, face = "bold"),
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      legend.position = "top",
+      legend.text = element_text(size=10)
     ) +
     labs(
       title = "Log10 Abundance\n(Zeros Excluded)",
@@ -847,11 +856,12 @@ for(variable in names(heatmap_data_des_list3)) {
     coord_flip() +
     theme_minimal() +
     theme(
-      axis.text.y = element_text(face = "italic", size = 10, colour = "black"),
-      axis.text.x = element_text(size = 10, colour = "black"),
-      axis.title = element_text(size = 12, face = "bold"),
-      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
-      legend.position = "top"
+      axis.text.y = element_text(face = "italic", size = 16, colour = "black"),
+      axis.text.x = element_text(size = 16, colour = "black"),
+      axis.title = element_text(size = 16, face = "bold"),
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      legend.position = "top",
+      legend.text = element_text(size=10)
     ) +
     labs(
       title = "Prevalence",
@@ -867,7 +877,7 @@ for(variable in names(heatmap_data_des_list3)) {
       title = paste0("Microbiome Analysis: ", variable),
       tag_levels = 'A',
       theme = theme(
-        plot.title = element_text(size = 16, face = "bold", hjust = 0.5, colour = "black")
+        plot.title = element_text(size = 20, face = "bold", hjust = 0.5, colour = "black")
       )
     )
   

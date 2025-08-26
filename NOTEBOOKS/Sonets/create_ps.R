@@ -71,6 +71,7 @@ humann_data <- read.csv("../porph_all_data_tables/MPAR_all_abundancies.tsv", sep
 humann_data <- humann_data %>%
   column_to_rownames(var = "Pathway")
 humann_data <- humann_data[!grepl("UNINTEGRATED|UNMAPPED", rownames(humann_data)), ]
+humann_data <- humann_data[!grepl("archaea|fungi|yeast|mammals|vertebrates|plants|mitochondria|invertebrates|mammalian", rownames(humann_data)), ]
 
 # making also HUMANn joint phyloseq, without splitting pathways to specific bacteria
 humann_data_joint <- humann_data[!grepl("\\|", row.names(humann_data)), ]  # Rows without '|'
@@ -92,6 +93,7 @@ colnames(tax_matrix) <- colnames(mags_tax_data)[-1]
 mags_tax_table <- tax_table(tax_matrix)
 mags_ps <- phyloseq(otu_table(mags_count_data,taxa_are_rows = TRUE), sample_data(meta),tax_table(mags_tax_table))
 mags_ps <- subset_samples(mags_ps, !(ID %in% samples_2_del))
+mags_ps@otu_table[is.na(mags_ps@otu_table)] <- 0
 # filtering out of bad quality MAGs
 keep_genomes <- read.csv("/home/ignatsonets/Downloads/porph_all_data_tables/mpar_filtered_mags.txt")
 keep_genomes <- as.character(keep_genomes)
